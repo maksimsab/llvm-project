@@ -1,0 +1,19 @@
+set(LLVM_LINK_COMPONENTS
+  Analysis
+  BitWriter
+  Core
+  IPO
+  IRPrinter
+  IRReader
+  Support
+  TargetParser
+  TransformUtils
+  InstCombine
+  ScalarOpts
+  Linker
+  Passes
+  )
+
+add_llvm_tool(sycl-post-link
+  sycl-post-link.cpp
+  )
