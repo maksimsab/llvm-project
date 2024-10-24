@@ -19,6 +19,7 @@
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
@@ -27,6 +28,8 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Triple.h"
+#include "llvm/Transforms/Utils/SYCLModuleSplit.h"
+#include "llvm/Transforms/Utils/SYCLUtils.h"
 #include "llvm/Transforms/Utils/SplitModule.h"
 
 using namespace llvm;
@@ -69,6 +72,65 @@ static cl::opt<std::string>
 static cl::opt<std::string>
     MCPU("mcpu", cl::desc("Target CPU, ignored if -mtriple is not used"),
          cl::value_desc("cpu"), cl::cat(SplitCategory));
+
+cl::opt<IRSplitMode> SYCLSplitMode(
+    "sycl-split", cl::desc("module split mode"), cl::Optional,
+    cl::init(SPLIT_NONE),
+    cl::values(
+        clEnumValN(SPLIT_PER_TU, "source",
+                   "1 output module per source (translation unit)"),
+        clEnumValN(SPLIT_PER_KERNEL, "kernel", "1 output module per kernel"),
+        clEnumValN(SPLIT_AUTO, "auto", "Choose split mode automatically")),
+    cl::cat(SplitCategory));
+
+cl::opt<bool> OutputAssembly{"S", cl::desc("Write output as LLVM assembly"),
+                             cl::cat(SplitCategory)};
+
+void writeStringToFile(std::string_view Content, StringRef Path) {
+  std::error_code EC;
+  raw_fd_ostream OS(Path, EC);
+  if (EC) {
+    errs() << formatv("error opening file: {0}\n", Path);
+    exit(1);
+  }
+
+  OS << Content << "\n";
+}
+
+void dumpSplitModulesAsTable(const std::vector<SYCLSplitModule> &SplitModules,
+                             StringRef Path) {
+  std::vector<std::string> Columns = {"Code", "Symbols"};
+  SYCLStringTable Table;
+  Table.emplace_back(std::move(Columns));
+  for (const auto &[I, SM] : enumerate(SplitModules)) {
+    std::string SymbolsFile = (Twine(Path) + "_" + Twine(I) + ".sym").str();
+    writeStringToFile(SM.Symbols, SymbolsFile);
+    std::vector<std::string> Row = {SM.ModuleFilePath, SymbolsFile};
+    Table.emplace_back(std::move(Row));
+  }
+
+  std::error_code EC;
+  raw_fd_ostream OS((Path + ".table").str(), EC);
+  if (EC) {
+    errs() << formatv("error opening file: {0}\n", Path);
+    exit(1);
+  }
+
+  writeSYCLStringTable(Table, OS);
+}
+
+Error runSYCLSplitModule(std::unique_ptr<Module> M) {
+  ModuleSplitterSettings Settings;
+  Settings.Mode = SYCLSplitMode;
+  Settings.OutputAssembly = OutputAssembly;
+  Settings.OutputPrefix = OutputFilename;
+  auto SplitModulesOrErr = splitSYCLModule(std::move(M), Settings);
+  if (!SplitModulesOrErr)
+    return SplitModulesOrErr.takeError();
+
+  dumpSplitModulesAsTable(*SplitModulesOrErr, OutputFilename);
+  return Error::success();
+}
 
 int main(int argc, char **argv) {
   InitLLVM X(argc, argv);
@@ -122,6 +184,16 @@ int main(int argc, char **argv) {
     // Declare success.
     Out->keep();
   };
+
+  if (SYCLSplitMode != IRSplitMode::SPLIT_NONE) {
+    auto E = runSYCLSplitModule(std::move(M));
+    if (E) {
+      errs() << E << "\n";
+      Err.print(argv[0], errs());
+    }
+
+    return 0;
+  }
 
   if (TM) {
     if (PreserveLocals) {
