@@ -24,7 +24,6 @@
 #include <vector>
 
 // TODO(maksimsab):
-//  * check GenXSPIRVWriterAdaptor comments
 //  * Maybe fix doxygen comments.
 
 namespace llvm {
@@ -32,32 +31,30 @@ namespace llvm {
 class Function;
 class Module;
 
-enum IRSplitMode {
-  SPLIT_PER_TU,     // one module per translation unit
-  SPLIT_PER_KERNEL, // one module per kernel
-  SPLIT_AUTO,       // automatically select split mode
-  SPLIT_NONE        // no splitting
+enum class IRSplitMode {
+  IRSM_PER_TU,           // one module per translation unit
+  IRSM_PER_KERNEL,       // one module per kernel
+  IRSM_AUTO,             // automatically select split mode
+  IRSM_NONE              // no splitting
 };
 
-// \returns IRSplitMode value if \p S is recognized. Otherwise, std::nullopt is
-// returned.
+/// \returns IRSplitMode value if \p S is recognized. Otherwise, std::nullopt is
+/// returned.
 std::optional<IRSplitMode> convertStringToSplitMode(StringRef S);
 
 // A vector that contains all entry point functions in a split module.
 using EntryPointSet = SetVector<Function *>;
 
-// enum class SyclEsimdSplitStatus { SYCL_ONLY, ESIMD_ONLY, SYCL_AND_ESIMD };
-
-// Describes scope covered by each entry in the module-entry points map
-// populated by the groupEntryPointsByScope function.
+/// Describes scope covered by each entry in the module-entry points map
+/// populated by the groupEntryPointsByScope function.
 enum EntryPointsGroupScope {
   Scope_PerKernel, // one entry per kernel
   Scope_PerModule, // one entry per module
   Scope_Global     // single entry in the map for all kernels
 };
 
-// Represents a named group of device code entry points - kernels and
-// SYCL_EXTERNAL functions.
+/// Represents a named group of device code entry points - kernels and
+/// SYCL_EXTERNAL functions.
 struct EntryPointGroup {
   // Properties an entry point (EP) group
   struct Properties {
@@ -81,15 +78,15 @@ struct EntryPointGroup {
   void rebuild(const Module &M);
 };
 
-using EntryPointGroupVec = std::vector<EntryPointGroup>;
+using EntryPointGroupVec = SmallVector<EntryPointGroup, 0>;
 
-// Annotates an llvm::Module with information necessary to perform and track
-// result of device code (llvm::Module instances) splitting:
-// - entry points of the module determined e.g. by a module splitter, as well
-//   as information about entry point origin (e.g. result of a scoped split)
-// - its properties, such as whether it has specialization constants uses
-// It also provides convenience functions for entry point set transformation
-// between llvm::Function object and string representations.
+/// Annotates an llvm::Module with information necessary to perform and track
+/// result of device code (llvm::Module instances) splitting:
+/// - entry points of the module determined e.g. by a module splitter, as well
+///   as information about entry point origin (e.g. result of a scoped split)
+/// - its properties, such as whether it has specialization constants uses
+/// It also provides convenience functions for entry point set transformation
+/// between llvm::Function object and string representations.
 class ModuleDesc {
   std::unique_ptr<Module> M;
   EntryPointGroup EntryPoints;
@@ -135,12 +132,12 @@ public:
 
   std::string makeSymbolTable() const;
 
-  void dump(raw_ostream &OS) const;
+  void dump() const;
 };
 
-// Module split support interface.
-// It gets a module (in a form of module descriptor, to get additional info) and
-// a collection of entry points groups. Each group specifies subset entry points
+/// Module split support interface.
+/// It gets a module (in a form of module descriptor, to get additional info) and
+/// a collection of entry points groups. Each group specifies subset entry points
 // from input module that should be included in a split module.
 class ModuleSplitterBase {
 protected:
@@ -169,15 +166,15 @@ public:
 
   virtual ~ModuleSplitterBase() = default;
 
-  // Gets next subsequence of entry points in an input module and provides split
-  // submodule containing these entry points and their dependencies.
+  /// Gets next subsequence of entry points in an input module and provides split
+  /// submodule containing these entry points and their dependencies.
   virtual ModuleDesc nextSplit() = 0;
 
-  // Returns a number of remaining modules, which can be split out using this
-  // splitter. The value is reduced by 1 each time nextSplit is called.
+  /// Returns a number of remaining modules, which can be split out using this
+  /// splitter. The value is reduced by 1 each time nextSplit is called.
   size_t remainingSplits() const { return Groups.size(); }
 
-  // Check that there are still submodules to split.
+  /// Check that there are still submodules to split.
   bool hasMoreSplits() const { return remainingSplits() > 0; }
 };
 
@@ -185,12 +182,8 @@ std::unique_ptr<ModuleSplitterBase>
 getDeviceCodeSplitter(ModuleDesc MD, IRSplitMode Mode, bool IROutputOnly,
                       bool EmitOnlyKernelsAsEntryPoints);
 
-void dumpEntryPoints(raw_ostream &OS, const EntryPointSet &C,
-                     std::string_view Msg = "");
-void dumpEntryPoints(raw_ostream &OS, const Module &M,
-                     bool OnlyKernelsAreEntryPoints = false,
-                     std::string_view Msg = "");
-
+/// The structure represents a split LLVM Module accompanied by additional information.
+/// Split Modules are being stored at disk due to the high RAM consumption during the whole splitting process.
 struct SYCLSplitModule {
   std::string ModuleFilePath;
   std::string Symbols;
@@ -212,11 +205,11 @@ struct ModuleSplitterSettings {
 };
 
 /// Parses the string table.
-Expected<std::vector<SYCLSplitModule>>
+Expected<SmallVector<SYCLSplitModule, 0>>
 parseSYCLSplitModulesFromFile(StringRef File);
 
 /// Splits the given module \p M according to the given \p Settings.
-Expected<std::vector<SYCLSplitModule>>
+Expected<SmallVector<SYCLSplitModule, 0>>
 splitSYCLModule(std::unique_ptr<Module> M, ModuleSplitterSettings Settings);
 
 } // namespace llvm

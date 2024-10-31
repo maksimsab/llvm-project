@@ -41,6 +41,7 @@
 #include <map>
 #include <utility>
 #include <variant>
+#include <vector>
 
 using namespace llvm;
 
@@ -55,13 +56,13 @@ EntryPointsGroupScope selectDeviceCodeGroupScope(const Module &M,
                                                  IRSplitMode Mode,
                                                  bool AutoSplitIsGlobalScope) {
   switch (Mode) {
-  case SPLIT_PER_TU:
+  case IRSplitMode::IRSM_PER_TU:
     return Scope_PerModule;
 
-  case SPLIT_PER_KERNEL:
+  case IRSplitMode::IRSM_PER_KERNEL:
     return Scope_PerKernel;
 
-  case SPLIT_AUTO: {
+  case IRSplitMode::IRSM_AUTO: {
     if (AutoSplitIsGlobalScope)
       return Scope_Global;
 
@@ -71,7 +72,7 @@ EntryPointsGroupScope selectDeviceCodeGroupScope(const Module &M,
     return Scope_PerModule;
   }
 
-  case SPLIT_NONE:
+  case IRSplitMode::IRSM_NONE:
     return Scope_Global;
   }
 
@@ -272,52 +273,6 @@ void collectFunctionsAndGlobalVariablesToExtract(
   }
 }
 
-// Check "spirv.ExecutionMode" named metadata in the module and remove nodes
-// that reference kernels that have dead prototypes or don't reference any
-// kernel at all (nullptr). Dead prototypes are removed as well.
-void processSubModuleNamedMetadata(Module *M) {
-  auto ExecutionModeMD = M->getNamedMetadata("spirv.ExecutionMode");
-  if (!ExecutionModeMD)
-    return;
-
-  bool ContainsNodesToRemove = false;
-  std::vector<MDNode *> ValueVec;
-  for (auto Op : ExecutionModeMD->operands()) {
-    assert(Op->getNumOperands() > 0);
-    if (!Op->getOperand(0)) {
-      ContainsNodesToRemove = true;
-      continue;
-    }
-
-    // If the first operand is not nullptr then it has to be a kernel
-    // function.
-    Value *Val = cast<ValueAsMetadata>(Op->getOperand(0))->getValue();
-    Function *F = cast<Function>(Val);
-    // If kernel function is just a prototype and unused then we can remove it
-    // and later remove corresponding spirv.ExecutionMode metadata node.
-    if (F->isDeclaration() && F->use_empty()) {
-      F->eraseFromParent();
-      ContainsNodesToRemove = true;
-      continue;
-    }
-
-    // Rememver nodes which we need to keep in the module.
-    ValueVec.push_back(Op);
-  }
-  if (!ContainsNodesToRemove)
-    return;
-
-  if (ValueVec.empty()) {
-    // If all nodes need to be removed then just remove named metadata
-    // completely.
-    ExecutionModeMD->eraseFromParent();
-  } else {
-    ExecutionModeMD->clearOperands();
-    for (auto MD : ValueVec)
-      ExecutionModeMD->addOperand(MD);
-  }
-}
-
 ModuleDesc extractSubModule(const ModuleDesc &MD,
                             const SetVector<const GlobalValue *> GVs,
                             EntryPointGroup ModuleEntryPoints) {
@@ -351,7 +306,7 @@ ModuleDesc extractCallGraph(const ModuleDesc &MD,
       GVs, MD.getModule(), ModuleEntryPoints, CG, IncludeFunctionPredicate);
 
   ModuleDesc SplitM = extractSubModule(MD, GVs, std::move(ModuleEntryPoints));
-  LLVM_DEBUG(SplitM.dump(dbgs()));
+  LLVM_DEBUG(SplitM.dump());
   SplitM.cleanup();
 
   return SplitM;
@@ -389,10 +344,10 @@ private:
 namespace llvm {
 
 std::optional<IRSplitMode> convertStringToSplitMode(StringRef S) {
-  static const StringMap<IRSplitMode> Values = {{"kernel", SPLIT_PER_KERNEL},
-                                                {"source", SPLIT_PER_TU},
-                                                {"auto", SPLIT_AUTO},
-                                                {"none", SPLIT_NONE}};
+  static const StringMap<IRSplitMode> Values = {{"kernel", IRSplitMode::IRSM_PER_KERNEL},
+                                                {"source", IRSplitMode::IRSM_PER_TU},
+                                                {"auto", IRSplitMode::IRSM_AUTO},
+                                                {"none", IRSplitMode::IRSM_NONE}};
 
   auto It = Values.find(S);
   if (It == Values.end())
@@ -401,27 +356,61 @@ std::optional<IRSplitMode> convertStringToSplitMode(StringRef S) {
   return It->second;
 }
 
-void dumpEntryPoints(raw_ostream &OS, const EntryPointSet &C,
+static void dumpEntryPoints(const EntryPointSet &C,
                      std::string_view Msg) {
   constexpr size_t INDENT = 4;
-  OS.indent(INDENT) << "ENTRY POINTS"
+  dbgs().indent(INDENT) << "ENTRY POINTS"
                     << " " << Msg << " {\n";
   for (const Function *F : C)
-    OS.indent(INDENT) << "  " << F->getName() << "\n";
+    dbgs().indent(INDENT) << "  " << F->getName() << "\n";
 
-  OS.indent(INDENT) << "}\n";
+  dbgs().indent(INDENT) << "}\n";
 }
 
-void dumpEntryPoints(raw_ostream &OS, const Module &M,
-                     bool OnlyKernelsAreEntryPoints, std::string_view Msg) {
-  constexpr size_t INDENT = 4;
-  OS.indent(INDENT) << "ENTRY POINTS (Module)"
-                    << " " << Msg << " {\n";
-  for (const auto &F : M)
-    if (isEntryPoint(F, OnlyKernelsAreEntryPoints))
-      OS.indent(INDENT) << "  " << F.getName() << "\n";
+// Check "spirv.ExecutionMode" named metadata in the module and remove nodes
+// that reference kernels that have dead prototypes or don't reference any
+// kernel at all (nullptr). Dead prototypes are removed as well.
+static void processSubModuleNamedMetadata(Module *M) {
+  auto ExecutionModeMD = M->getNamedMetadata("spirv.ExecutionMode");
+  if (!ExecutionModeMD)
+    return;
 
-  OS.indent(INDENT) << "}\n";
+  bool ContainsNodesToRemove = false;
+  SmallVector<MDNode *, 128> ValueVec;
+  for (auto Op : ExecutionModeMD->operands()) {
+    assert(Op->getNumOperands() > 0);
+    if (!Op->getOperand(0)) {
+      ContainsNodesToRemove = true;
+      continue;
+    }
+
+    // If the first operand is not nullptr then it has to be a kernel
+    // function.
+    Value *Val = cast<ValueAsMetadata>(Op->getOperand(0))->getValue();
+    Function *F = cast<Function>(Val);
+    // If kernel function is just a prototype and unused then we can remove it
+    // and later remove corresponding spirv.ExecutionMode metadata node.
+    if (F->isDeclaration() && F->use_empty()) {
+      F->eraseFromParent();
+      ContainsNodesToRemove = true;
+      continue;
+    }
+
+    // Rememver nodes which we need to keep in the module.
+    ValueVec.push_back(Op);
+  }
+  if (!ContainsNodesToRemove)
+    return;
+
+  if (ValueVec.empty()) {
+    // If all nodes need to be removed then just remove named metadata
+    // completely.
+    ExecutionModeMD->eraseFromParent();
+  } else {
+    ExecutionModeMD->clearOperands();
+    for (auto MD : ValueVec)
+      ExecutionModeMD->addOperand(MD);
+  }
 }
 
 void ModuleDesc::cleanup() {
@@ -456,11 +445,11 @@ ModuleDesc ModuleDesc::clone() const {
   return NewMD;
 }
 
-void ModuleDesc::dump(raw_ostream &OS) const {
+void ModuleDesc::dump() const {
   assert(M && "dump of empty ModuleDesc");
-  OS << "split_module::ModuleDesc[" << M->getName() << "] {\n";
-  dumpEntryPoints(OS, entries(), EntryPoints.GroupId.c_str());
-  OS << "}\n";
+  dbgs() << "split_module::ModuleDesc[" << M->getName() << "] {\n";
+  dumpEntryPoints(entries(), EntryPoints.GroupId.c_str());
+  dbgs() << "}\n";
 }
 
 void EntryPointGroup::saveNames(std::vector<std::string> &Dest) const {
@@ -570,34 +559,6 @@ public:
     Rules.emplace_back(Rule::RKind::K_SortedIntegersListMetadata, MetadataName);
   }
 
-  // Creates a rule, which adds a list of sorted dash-separated integers from
-  // converted into strings listed in a metadata to a resulting identifier.
-  // The form of the metadata is expected to be a metadata node, with its
-  // operands being either an integer or another metadata node with the
-  // form of {!"<aspect_name>", iN <aspect_value>}.
-  void registerAspectListRule(StringRef MetadataName) {
-    registerRule([MetadataName](Function *F) {
-      SmallString<128> Result;
-      if (MDNode *UsedAspects = F->getMetadata(MetadataName)) {
-        SmallVector<std::uint64_t, 8> Values;
-        for (const MDOperand &MDOp : UsedAspects->operands()) {
-          if (auto MDN = dyn_cast<MDNode>(MDOp)) {
-            assert(MDN->getNumOperands() == 2);
-            Values.push_back(mdconst::extract<ConstantInt>(MDN->getOperand(1))
-                                 ->getZExtValue());
-          } else if (auto C = mdconst::dyn_extract<ConstantInt>(MDOp))
-            Values.push_back(C->getZExtValue());
-        }
-
-        llvm::sort(Values);
-        for (std::uint64_t V : Values)
-          Result += ("-" + Twine(V)).str();
-      }
-
-      return std::string(Result);
-    });
-  }
-
 private:
   struct Rule {
     struct FlagRuleData {
@@ -659,7 +620,7 @@ private:
     Rule(Rule &&Other) = default;
   };
 
-  std::vector<Rule> Rules;
+  SmallVector<Rule, 0> Rules;
 };
 
 std::string FunctionsCategorizer::computeCategoryFor(Function *F) const {
@@ -787,14 +748,11 @@ getDeviceCodeSplitter(ModuleDesc MD, IRSplitMode Mode, bool IROutputOnly,
     // output files in existing tests.
     Categorizer.registerSimpleStringAttributeRule("sycl-register-alloc-mode");
     Categorizer.registerSimpleStringAttributeRule("sycl-grf-size");
-    Categorizer.registerAspectListRule("sycl_used_aspects");
     Categorizer.registerListOfIntegersInMetadataRule("reqd_work_group_size");
     Categorizer.registerListOfIntegersInMetadataRule("work_group_num_dim");
     Categorizer.registerListOfIntegersInMetadataRule(
         "intel_reqd_sub_group_size");
     Categorizer.registerSimpleStringAttributeRule(ATTR_SYCL_OPTLEVEL);
-    Categorizer.registerSimpleStringMetadataRule("sycl_joint_matrix");
-    Categorizer.registerSimpleStringMetadataRule("sycl_joint_matrix_mad");
     break;
   }
 
@@ -823,8 +781,8 @@ getDeviceCodeSplitter(ModuleDesc MD, IRSplitMode Mode, bool IROutputOnly,
       Groups.emplace_back(Key, std::move(EntryPoints), MDProps);
   }
 
-  bool DoSplit = (Mode != SPLIT_NONE &&
-                  (Groups.size() > 1 || !Groups.cbegin()->Functions.empty()));
+  bool DoSplit = (Mode != IRSplitMode::IRSM_NONE &&
+                  (Groups.size() > 1 || !Groups.begin()->Functions.empty()));
 
   if (DoSplit)
     return std::make_unique<ModuleSplitter>(std::move(MD), std::move(Groups));
@@ -864,7 +822,7 @@ saveModuleDesc(ModuleDesc &MD, std::string Prefix, bool OutputAssembly) {
   return SM;
 }
 
-Expected<std::vector<SYCLSplitModule>>
+Expected<SmallVector<SYCLSplitModule, 0>>
 parseSYCLSplitModulesFromFile(StringRef File) {
   auto EntriesMBOrErr = llvm::MemoryBuffer::getFile(File);
   if (!EntriesMBOrErr)
@@ -878,7 +836,7 @@ parseSYCLSplitModulesFromFile(StringRef File) {
   // "Code" and "Symbols" at the moment.
   static constexpr int NUMBER_COLUMNS = 2;
   ++LI;
-  std::vector<SYCLSplitModule> Modules;
+  SmallVector<SYCLSplitModule, 0> Modules;
   while (!LI.is_at_eof()) {
     StringRef Line = *LI;
     if (Line.empty())
@@ -907,7 +865,7 @@ parseSYCLSplitModulesFromFile(StringRef File) {
   return Modules;
 }
 
-Expected<std::vector<SYCLSplitModule>>
+Expected<SmallVector<SYCLSplitModule, 0>>
 splitSYCLModule(std::unique_ptr<Module> M, ModuleSplitterSettings Settings) {
   ModuleDesc MD = std::move(M);
   auto Splitter = getDeviceCodeSplitter(std::move(MD), Settings.Mode,
@@ -915,7 +873,7 @@ splitSYCLModule(std::unique_ptr<Module> M, ModuleSplitterSettings Settings) {
                                         /*EmitOnlyKernelsAsEntryPoints=*/false);
 
   size_t ID = 0;
-  std::vector<SYCLSplitModule> OutputImages;
+  SmallVector<SYCLSplitModule, 0> OutputImages;
   while (Splitter->hasMoreSplits()) {
     ModuleDesc MD = Splitter->nextSplit();
 

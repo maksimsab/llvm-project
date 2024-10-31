@@ -32,6 +32,9 @@
 #include "llvm/Transforms/Utils/SYCLUtils.h"
 #include "llvm/Transforms/Utils/SplitModule.h"
 
+#include <vector>
+#include <string>
+
 using namespace llvm;
 
 static cl::OptionCategory SplitCategory("Split Options");
@@ -75,12 +78,12 @@ static cl::opt<std::string>
 
 cl::opt<IRSplitMode> SYCLSplitMode(
     "sycl-split", cl::desc("module split mode"), cl::Optional,
-    cl::init(SPLIT_NONE),
+    cl::init(IRSplitMode::IRSM_NONE),
     cl::values(
-        clEnumValN(SPLIT_PER_TU, "source",
+        clEnumValN(IRSplitMode::IRSM_PER_TU, "source",
                    "1 output module per source (translation unit)"),
-        clEnumValN(SPLIT_PER_KERNEL, "kernel", "1 output module per kernel"),
-        clEnumValN(SPLIT_AUTO, "auto", "Choose split mode automatically")),
+        clEnumValN(IRSplitMode::IRSM_PER_KERNEL, "kernel", "1 output module per kernel"),
+        clEnumValN(IRSplitMode::IRSM_AUTO, "auto", "Choose split mode automatically")),
     cl::cat(SplitCategory));
 
 cl::opt<bool> OutputAssembly{"S", cl::desc("Write output as LLVM assembly"),
@@ -97,7 +100,7 @@ void writeStringToFile(std::string_view Content, StringRef Path) {
   OS << Content << "\n";
 }
 
-void dumpSplitModulesAsTable(const std::vector<SYCLSplitModule> &SplitModules,
+void writeSplitModulesAsTable(ArrayRef<SYCLSplitModule> SplitModules,
                              StringRef Path) {
   std::vector<std::string> Columns = {"Code", "Symbols"};
   SYCLStringTable Table;
@@ -128,7 +131,7 @@ Error runSYCLSplitModule(std::unique_ptr<Module> M) {
   if (!SplitModulesOrErr)
     return SplitModulesOrErr.takeError();
 
-  dumpSplitModulesAsTable(*SplitModulesOrErr, OutputFilename);
+  writeSplitModulesAsTable(*SplitModulesOrErr, OutputFilename);
   return Error::success();
 }
 
@@ -185,7 +188,7 @@ int main(int argc, char **argv) {
     Out->keep();
   };
 
-  if (SYCLSplitMode != IRSplitMode::SPLIT_NONE) {
+  if (SYCLSplitMode != IRSplitMode::IRSM_NONE) {
     auto E = runSYCLSplitModule(std::move(M));
     if (E) {
       errs() << E << "\n";
