@@ -21,10 +21,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <vector>
-
-// TODO(maksimsab):
-//  * Maybe fix doxygen comments.
 
 namespace llvm {
 
@@ -72,10 +68,6 @@ struct EntryPointGroup {
   EntryPointGroup(StringRef GroupId, EntryPointSet Functions,
                   const Properties &Props)
       : GroupId(GroupId), Functions(std::move(Functions)), Props(Props) {}
-
-  void saveNames(std::vector<std::string> &Dest) const;
-  void rebuildFromNames(const std::vector<std::string> &Names, const Module &M);
-  void rebuild(const Module &M);
 };
 
 using EntryPointGroupVec = SmallVector<EntryPointGroup, 0>;
@@ -97,33 +89,12 @@ public:
   ModuleDesc(std::unique_ptr<Module> M, EntryPointGroup EntryPoints)
       : M(std::move(M)), EntryPoints(std::move(EntryPoints)) {}
 
-  ModuleDesc(std::unique_ptr<Module> M, const std::vector<std::string> &Names)
-      : M(std::move(M)) {
-    rebuildEntryPoints(Names);
-  }
-
   const EntryPointSet &entries() const { return EntryPoints.Functions; }
   const EntryPointGroup &getEntryPointGroup() const { return EntryPoints; }
   EntryPointSet &entries() { return EntryPoints.Functions; }
   Module &getModule() { return *M; }
   const Module &getModule() const { return *M; }
   std::unique_ptr<Module> releaseModulePtr() { return std::move(M); }
-
-  // Sometimes, during module transformations, some Function objects within the
-  // module are replaced with different Function objects with the same name.
-  // Entry points need to be updated to include the replacement function.
-  // save/rebuild pair of functions is provided to automate this process.
-  void saveEntryPointNames(std::vector<std::string> &Dest) {
-    EntryPoints.saveNames(Dest);
-  }
-
-  void rebuildEntryPoints(const std::vector<std::string> &Names) {
-    EntryPoints.rebuildFromNames(Names, getModule());
-  }
-
-  void rebuildEntryPoints(const Module &M) { EntryPoints.rebuild(M); }
-
-  void rebuildEntryPoints() { EntryPoints.rebuild(*M); }
 
   // Cleans up module IR - removes dead globals, debug info etc.
   void cleanup();

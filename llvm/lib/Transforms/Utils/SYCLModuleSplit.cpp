@@ -41,7 +41,6 @@
 #include <map>
 #include <utility>
 #include <variant>
-#include <vector>
 
 using namespace llvm;
 
@@ -450,36 +449,6 @@ void ModuleDesc::dump() const {
   dbgs() << "split_module::ModuleDesc[" << M->getName() << "] {\n";
   dumpEntryPoints(entries(), EntryPoints.GroupId.c_str());
   dbgs() << "}\n";
-}
-
-void EntryPointGroup::saveNames(std::vector<std::string> &Dest) const {
-  Dest.reserve(Dest.size() + Functions.size());
-  std::transform(Functions.begin(), Functions.end(),
-                 std::inserter(Dest, Dest.end()),
-                 [](const Function *F) { return F->getName().str(); });
-}
-
-void EntryPointGroup::rebuildFromNames(const std::vector<std::string> &Names,
-                                       const Module &M) {
-  Functions.clear();
-  auto It0 = Names.cbegin();
-  auto It1 = Names.cend();
-  std::for_each(It0, It1, [&](const std::string &Name) {
-    // Sometimes functions considered entry points (those for which isEntryPoint
-    // returned true) may be dropped by optimizations, such as AlwaysInliner.
-    // For example, if a linkonce_odr function is inlined and there are no other
-    // uses, AlwaysInliner drops it. It is responsibility of the user to make an
-    // entry point not have internal linkage (such as linkonce_odr) to guarantee
-    // its availability in the resulting device binary image.
-    if (Function *F = M.getFunction(Name))
-      Functions.insert(F);
-  });
-}
-
-void EntryPointGroup::rebuild(const Module &M) {
-  for (const Function &F : M.functions())
-    if (F.getCallingConv() == CallingConv::SPIR_KERNEL)
-      Functions.insert(const_cast<Function *>(&F));
 }
 
 std::string ModuleDesc::makeSymbolTable() const {
