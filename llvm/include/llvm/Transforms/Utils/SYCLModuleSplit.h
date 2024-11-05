@@ -28,10 +28,10 @@ class Function;
 class Module;
 
 enum class IRSplitMode {
-  IRSM_PER_TU,           // one module per translation unit
-  IRSM_PER_KERNEL,       // one module per kernel
-  IRSM_AUTO,             // automatically select split mode
-  IRSM_NONE              // no splitting
+  IRSM_PER_TU,     // one module per translation unit
+  IRSM_PER_KERNEL, // one module per kernel
+  IRSM_AUTO,       // automatically select split mode
+  IRSM_NONE        // no splitting
 };
 
 /// \returns IRSplitMode value if \p S is recognized. Otherwise, std::nullopt is
@@ -99,16 +99,15 @@ public:
   // Cleans up module IR - removes dead globals, debug info etc.
   void cleanup();
 
-  ModuleDesc clone() const;
-
   std::string makeSymbolTable() const;
 
   void dump() const;
 };
 
 /// Module split support interface.
-/// It gets a module (in a form of module descriptor, to get additional info) and
-/// a collection of entry points groups. Each group specifies subset entry points
+/// It gets a module (in a form of module descriptor, to get additional info)
+/// and a collection of entry points groups. Each group specifies subset entry
+/// points
 // from input module that should be included in a split module.
 class ModuleSplitterBase {
 protected:
@@ -137,8 +136,8 @@ public:
 
   virtual ~ModuleSplitterBase() = default;
 
-  /// Gets next subsequence of entry points in an input module and provides split
-  /// submodule containing these entry points and their dependencies.
+  /// Gets next subsequence of entry points in an input module and provides
+  /// split submodule containing these entry points and their dependencies.
   virtual ModuleDesc nextSplit() = 0;
 
   /// Returns a number of remaining modules, which can be split out using this
@@ -153,8 +152,9 @@ std::unique_ptr<ModuleSplitterBase>
 getDeviceCodeSplitter(ModuleDesc MD, IRSplitMode Mode, bool IROutputOnly,
                       bool EmitOnlyKernelsAsEntryPoints);
 
-/// The structure represents a split LLVM Module accompanied by additional information.
-/// Split Modules are being stored at disk due to the high RAM consumption during the whole splitting process.
+/// The structure represents a split LLVM Module accompanied by additional
+/// information. Split Modules are being stored at disk due to the high RAM
+/// consumption during the whole splitting process.
 struct SYCLSplitModule {
   std::string ModuleFilePath;
   std::string Symbols;

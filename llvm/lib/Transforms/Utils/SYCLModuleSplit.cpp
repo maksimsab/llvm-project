@@ -49,11 +49,8 @@ using namespace llvm;
 namespace {
 // Identifying name for global scope
 constexpr char GLOBAL_SCOPE_NAME[] = "<GLOBAL>";
-constexpr char SYCL_SCOPE_NAME[] = "<SYCL>";
 
-EntryPointsGroupScope selectDeviceCodeGroupScope(const Module &M,
-                                                 IRSplitMode Mode,
-                                                 bool AutoSplitIsGlobalScope) {
+EntryPointsGroupScope selectDeviceCodeGroupScope(IRSplitMode Mode) {
   switch (Mode) {
   case IRSplitMode::IRSM_PER_TU:
     return Scope_PerModule;
@@ -62,9 +59,6 @@ EntryPointsGroupScope selectDeviceCodeGroupScope(const Module &M,
     return Scope_PerKernel;
 
   case IRSplitMode::IRSM_AUTO: {
-    if (AutoSplitIsGlobalScope)
-      return Scope_Global;
-
     // At the moment, we assume that per-source split is the best way of
     // splitting device code and can always be used except for cases handled
     // above.
@@ -343,10 +337,11 @@ private:
 namespace llvm {
 
 std::optional<IRSplitMode> convertStringToSplitMode(StringRef S) {
-  static const StringMap<IRSplitMode> Values = {{"kernel", IRSplitMode::IRSM_PER_KERNEL},
-                                                {"source", IRSplitMode::IRSM_PER_TU},
-                                                {"auto", IRSplitMode::IRSM_AUTO},
-                                                {"none", IRSplitMode::IRSM_NONE}};
+  static const StringMap<IRSplitMode> Values = {
+      {"kernel", IRSplitMode::IRSM_PER_KERNEL},
+      {"source", IRSplitMode::IRSM_PER_TU},
+      {"auto", IRSplitMode::IRSM_AUTO},
+      {"none", IRSplitMode::IRSM_NONE}};
 
   auto It = Values.find(S);
   if (It == Values.end())
@@ -355,11 +350,10 @@ std::optional<IRSplitMode> convertStringToSplitMode(StringRef S) {
   return It->second;
 }
 
-static void dumpEntryPoints(const EntryPointSet &C,
-                     std::string_view Msg) {
+static void dumpEntryPoints(const EntryPointSet &C, std::string_view Msg) {
   constexpr size_t INDENT = 4;
   dbgs().indent(INDENT) << "ENTRY POINTS"
-                    << " " << Msg << " {\n";
+                        << " " << Msg << " {\n";
   for (const Function *F : C)
     dbgs().indent(INDENT) << "  " << F->getName() << "\n";
 
@@ -435,13 +429,6 @@ void ModuleDesc::cleanup() {
   // process all nodes in the named metadata and remove nodes which are
   // referencing kernels which are not included into submodule.
   processSubModuleNamedMetadata(M.get());
-}
-
-ModuleDesc ModuleDesc::clone() const {
-  std::unique_ptr<Module> NewModule = CloneModule(getModule());
-  ModuleDesc NewMD(std::move(NewModule));
-  NewMD.EntryPoints.Props = EntryPoints.Props;
-  return NewMD;
 }
 
 void ModuleDesc::dump() const {
@@ -675,12 +662,11 @@ std::string FunctionsCategorizer::computeCategoryFor(Function *F) const {
 } // namespace
 
 std::unique_ptr<ModuleSplitterBase>
-getDeviceCodeSplitter(ModuleDesc MD, IRSplitMode Mode, bool IROutputOnly,
+getDeviceCodeSplitter(ModuleDesc MD, IRSplitMode Mode,
                       bool EmitOnlyKernelsAsEntryPoints) {
   FunctionsCategorizer Categorizer;
 
-  EntryPointsGroupScope Scope =
-      selectDeviceCodeGroupScope(MD.getModule(), Mode, IROutputOnly);
+  EntryPointsGroupScope Scope = selectDeviceCodeGroupScope(Mode);
 
   switch (Scope) {
   case Scope_Global:
@@ -838,7 +824,6 @@ Expected<SmallVector<SYCLSplitModule, 0>>
 splitSYCLModule(std::unique_ptr<Module> M, ModuleSplitterSettings Settings) {
   ModuleDesc MD = std::move(M);
   auto Splitter = getDeviceCodeSplitter(std::move(MD), Settings.Mode,
-                                        /*IROutputOnly=*/false,
                                         /*EmitOnlyKernelsAsEntryPoints=*/false);
 
   size_t ID = 0;
