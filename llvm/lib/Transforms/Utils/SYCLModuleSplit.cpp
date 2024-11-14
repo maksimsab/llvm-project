@@ -231,43 +231,34 @@ private:
 
 void collectFunctionsAndGlobalVariablesToExtract(
     SetVector<const GlobalValue *> &GVs, const Module &M,
-    const EntryPointGroup &ModuleEntryPoints, const DependencyGraph &Deps,
-    const std::function<bool(const Function *)> &IncludeFunctionPredicate =
-        nullptr) {
+    const EntryPointGroup &ModuleEntryPoints, const DependencyGraph &DG) {
   // We start with module entry points
   for (const auto *F : ModuleEntryPoints.Functions)
     GVs.insert(F);
 
   // Non-discardable global variables are also include into the initial set
-  for (const auto &GV : M.globals()) {
+  for (const auto &GV : M.globals())
     if (!GV.isDiscardableIfUnused())
       GVs.insert(&GV);
-  }
 
   // GVs has SetVector type. This type inserts a value only if it is not yet
   // present there. So, recursion is not expected here.
   size_t Idx = 0;
   while (Idx < GVs.size()) {
-    const auto *Obj = GVs[Idx++];
+    const GlobalValue *Obj = GVs[Idx++];
 
-    for (const GlobalValue *Dep : Deps.dependencies(Obj)) {
+    for (const GlobalValue *Dep : DG.dependencies(Obj)) {
       if (const auto *Func = dyn_cast<const Function>(Dep)) {
-        if (Func->isDeclaration())
-          continue;
-
-        // Functions can be additionally filtered
-        if (!IncludeFunctionPredicate || IncludeFunctionPredicate(Func))
+        if (!Func->isDeclaration())
           GVs.insert(Func);
-      } else {
-        // Global variables are added unconditionally
-        GVs.insert(Dep);
-      }
+      } else
+        GVs.insert(Dep); // Global variables are added unconditionally
     }
   }
 }
 
 ModuleDesc extractSubModule(const ModuleDesc &MD,
-                            const SetVector<const GlobalValue *> GVs,
+                            const SetVector<const GlobalValue *> &GVs,
                             EntryPointGroup ModuleEntryPoints) {
   const Module &M = MD.getModule();
   // For each group of entry points collect all dependencies.
@@ -291,45 +282,52 @@ ModuleDesc extractSubModule(const ModuleDesc &MD,
 // in ModuleEntryPoints vector, in addition to the entry point functions.
 ModuleDesc extractCallGraph(const ModuleDesc &MD,
                             EntryPointGroup ModuleEntryPoints,
-                            const DependencyGraph &CG,
-                            const std::function<bool(const Function *)>
-                                &IncludeFunctionPredicate = nullptr) {
+                            const DependencyGraph &DG) {
   SetVector<const GlobalValue *> GVs;
-  collectFunctionsAndGlobalVariablesToExtract(
-      GVs, MD.getModule(), ModuleEntryPoints, CG, IncludeFunctionPredicate);
+  collectFunctionsAndGlobalVariablesToExtract(GVs, MD.getModule(),
+                                              ModuleEntryPoints, DG);
 
   ModuleDesc SplitM = extractSubModule(MD, GVs, std::move(ModuleEntryPoints));
   LLVM_DEBUG(SplitM.dump());
   SplitM.cleanup();
-
   return SplitM;
 }
 
-class ModuleCopier : public ModuleSplitterBase {
-public:
-  using ModuleSplitterBase::ModuleSplitterBase; // to inherit base constructors
+using EntryPointGroupVec = SmallVector<EntryPointGroup, 0>;
 
-  ModuleDesc nextSplit() override {
-    ModuleDesc Desc{releaseInputModule(), nextGroup()};
-    // Do some basic optimization like unused symbol removal
-    // even if there was no split.
-    Desc.cleanup();
-    return Desc;
-  }
-};
-
-class ModuleSplitter : public ModuleSplitterBase {
-public:
-  ModuleSplitter(ModuleDesc MD, EntryPointGroupVec GroupVec)
-      : ModuleSplitterBase(std::move(MD), std::move(GroupVec)),
-        CG(Input.getModule()) {}
-
-  ModuleDesc nextSplit() override {
-    return extractCallGraph(Input, nextGroup(), CG);
-  }
+/// Module Splitter.
+/// It gets a module (in a form of module descriptor, to get additional info)
+/// and a collection of entry points groups. Each group specifies subset entry
+/// points from input module that should be included in a split module.
+class ModuleSplitter {
+private:
+  ModuleDesc Input;
+  EntryPointGroupVec Groups;
+  DependencyGraph DG;
 
 private:
-  DependencyGraph CG;
+  EntryPointGroup drawEntryPointGroup() {
+    assert(Groups.size() > 0 && "Reached end of entry point groups list.");
+    EntryPointGroup Group = std::move(Groups.back());
+    Groups.pop_back();
+    return Group;
+  }
+
+public:
+  ModuleSplitter(ModuleDesc MD, EntryPointGroupVec GroupVec)
+      : Input(std::move(MD)), Groups(std::move(GroupVec)),
+        DG(Input.getModule()) {
+    assert(!Groups.empty() && "Entry points groups collection is empty!");
+  }
+
+  /// Gets next subsequence of entry points in an input module and provides
+  /// split submodule containing these entry points and their dependencies.
+  ModuleDesc getNextSplit() {
+    return extractCallGraph(Input, drawEntryPointGroup(), DG);
+  }
+
+  /// Check that there are still submodules to split.
+  bool hasMoreSplits() const { return Groups.size() > 0; }
 };
 
 } // namespace
@@ -464,11 +462,12 @@ class FunctionsCategorizer {
 public:
   FunctionsCategorizer() = default;
 
-  std::string computeCategoryFor(Function *) const;
+  std::string computeCategoryFor(const Function *) const;
 
   // Accepts a callback, which should return a string based on provided
   // function, which will be used as an entry points group identifier.
-  void registerRule(const std::function<std::string(Function *)> &Callback) {
+  void
+  registerRule(const std::function<std::string(const Function *)> &Callback) {
     Rules.emplace_back(Rule::RKind::K_Callback, Callback);
   }
 
@@ -523,7 +522,7 @@ private:
 
   private:
     std::variant<StringRef, FlagRuleData,
-                 std::function<std::string(Function *)>>
+                 std::function<std::string(const Function *)>>
         Storage;
 
   public:
@@ -579,7 +578,7 @@ private:
   SmallVector<Rule, 0> Rules;
 };
 
-std::string FunctionsCategorizer::computeCategoryFor(Function *F) const {
+std::string FunctionsCategorizer::computeCategoryFor(const Function *F) const {
   SmallString<256> Result;
   for (const auto &R : Rules) {
     StringRef AttrName;
@@ -659,11 +658,12 @@ std::string FunctionsCategorizer::computeCategoryFor(Function *F) const {
 
   return static_cast<std::string>(Result);
 }
+
 } // namespace
 
-std::unique_ptr<ModuleSplitterBase>
-getDeviceCodeSplitter(ModuleDesc MD, IRSplitMode Mode,
-                      bool EmitOnlyKernelsAsEntryPoints) {
+static EntryPointGroupVec
+selectEntryPointGroups(const ModuleDesc &MD, IRSplitMode Mode,
+                       bool EmitOnlyKernelsAsEntryPoints) {
   FunctionsCategorizer Categorizer;
 
   EntryPointsGroupScope Scope = selectDeviceCodeGroupScope(Mode);
@@ -672,13 +672,13 @@ getDeviceCodeSplitter(ModuleDesc MD, IRSplitMode Mode,
   case Scope_Global:
     // We simply perform entry points filtering, but group all of them together.
     Categorizer.registerRule(
-        [](Function *) -> std::string { return GLOBAL_SCOPE_NAME; });
+        [](const Function *) -> std::string { return GLOBAL_SCOPE_NAME; });
     break;
   case Scope_PerKernel:
     // Per-kernel split is quite simple: every kernel goes into a separate
     // module and that's it, no other rules required.
     Categorizer.registerRule(
-        [](Function *F) -> std::string { return F->getName().str(); });
+        [](const Function *F) -> std::string { return F->getName().str(); });
     break;
   case Scope_PerModule:
     // The most complex case, because we should account for many other features
@@ -716,7 +716,7 @@ getDeviceCodeSplitter(ModuleDesc MD, IRSplitMode Mode,
   std::map<std::string, EntryPointSet> EntryPointsMap;
 
   // Only process module entry points:
-  for (auto &F : MD.getModule().functions()) {
+  for (const auto &F : MD.getModule().functions()) {
     if (!isEntryPoint(F, EmitOnlyKernelsAsEntryPoints))
       continue;
 
@@ -736,13 +736,7 @@ getDeviceCodeSplitter(ModuleDesc MD, IRSplitMode Mode,
       Groups.emplace_back(Key, std::move(EntryPoints), MDProps);
   }
 
-  bool DoSplit = (Mode != IRSplitMode::IRSM_NONE &&
-                  (Groups.size() > 1 || !Groups.begin()->Functions.empty()));
-
-  if (DoSplit)
-    return std::make_unique<ModuleSplitter>(std::move(MD), std::move(Groups));
-
-  return std::make_unique<ModuleCopier>(std::move(MD), std::move(Groups));
+  return Groups;
 }
 
 static Error saveModuleIRInFile(Module &M, StringRef FilePath,
@@ -823,13 +817,27 @@ parseSYCLSplitModulesFromFile(StringRef File) {
 Expected<SmallVector<SYCLSplitModule, 0>>
 splitSYCLModule(std::unique_ptr<Module> M, ModuleSplitterSettings Settings) {
   ModuleDesc MD = std::move(M);
-  auto Splitter = getDeviceCodeSplitter(std::move(MD), Settings.Mode,
-                                        /*EmitOnlyKernelsAsEntryPoints=*/false);
+  EntryPointGroupVec Groups =
+      selectEntryPointGroups(MD, Settings.Mode,
+                             /*EmitOnlyKernelsAsEntryPoints=*/false);
 
-  size_t ID = 0;
   SmallVector<SYCLSplitModule, 0> OutputImages;
-  while (Splitter->hasMoreSplits()) {
-    ModuleDesc MD = Splitter->nextSplit();
+  if (Groups.size() < 2) {
+    // FIXME(maksimsab): this branch is not tested yet.
+    std::string OutIRFileName = (Settings.OutputPrefix + Twine("_0")).str();
+    auto ImageOrErr =
+        saveModuleDesc(MD, OutIRFileName, Settings.OutputAssembly);
+    if (!ImageOrErr)
+      return ImageOrErr.takeError();
+
+    OutputImages.emplace_back(std::move(*ImageOrErr));
+    return OutputImages;
+  }
+
+  ModuleSplitter Splitter(std::move(MD), std::move(Groups));
+  size_t ID = 0;
+  while (Splitter.hasMoreSplits()) {
+    ModuleDesc MD = Splitter.getNextSplit();
 
     std::string OutIRFileName = (Settings.OutputPrefix + "_" + Twine(ID)).str();
     auto SplitImageOrErr =

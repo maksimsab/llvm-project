@@ -39,7 +39,7 @@ enum class IRSplitMode {
 std::optional<IRSplitMode> convertStringToSplitMode(StringRef S);
 
 // A vector that contains all entry point functions in a split module.
-using EntryPointSet = SetVector<Function *>;
+using EntryPointSet = SetVector<const Function *>;
 
 /// Describes scope covered by each entry in the module-entry points map
 /// populated by the groupEntryPointsByScope function.
@@ -70,8 +70,7 @@ struct EntryPointGroup {
       : GroupId(GroupId), Functions(std::move(Functions)), Props(Props) {}
 };
 
-using EntryPointGroupVec = SmallVector<EntryPointGroup, 0>;
-
+// TODO: move it into cpp file.
 /// Annotates an llvm::Module with information necessary to perform and track
 /// result of device code (llvm::Module instances) splitting:
 /// - entry points of the module determined e.g. by a module splitter, as well
@@ -103,54 +102,6 @@ public:
 
   void dump() const;
 };
-
-/// Module split support interface.
-/// It gets a module (in a form of module descriptor, to get additional info)
-/// and a collection of entry points groups. Each group specifies subset entry
-/// points
-// from input module that should be included in a split module.
-class ModuleSplitterBase {
-protected:
-  ModuleDesc Input;
-  EntryPointGroupVec Groups;
-
-protected:
-  EntryPointGroup nextGroup() {
-    assert(hasMoreSplits() && "Reached end of entry point groups list.");
-    EntryPointGroup Res = std::move(Groups.back());
-    Groups.pop_back();
-    return Res;
-  }
-
-  Module &getInputModule() { return Input.getModule(); }
-
-  std::unique_ptr<Module> releaseInputModule() {
-    return Input.releaseModulePtr();
-  }
-
-public:
-  ModuleSplitterBase(ModuleDesc MD, EntryPointGroupVec GroupVec)
-      : Input(std::move(MD)), Groups(std::move(GroupVec)) {
-    assert(!Groups.empty() && "Entry points groups collection is empty!");
-  }
-
-  virtual ~ModuleSplitterBase() = default;
-
-  /// Gets next subsequence of entry points in an input module and provides
-  /// split submodule containing these entry points and their dependencies.
-  virtual ModuleDesc nextSplit() = 0;
-
-  /// Returns a number of remaining modules, which can be split out using this
-  /// splitter. The value is reduced by 1 each time nextSplit is called.
-  size_t remainingSplits() const { return Groups.size(); }
-
-  /// Check that there are still submodules to split.
-  bool hasMoreSplits() const { return remainingSplits() > 0; }
-};
-
-std::unique_ptr<ModuleSplitterBase>
-getDeviceCodeSplitter(ModuleDesc MD, IRSplitMode Mode, bool IROutputOnly,
-                      bool EmitOnlyKernelsAsEntryPoints);
 
 /// The structure represents a split LLVM Module accompanied by additional
 /// information. Split Modules are being stored at disk due to the high RAM
