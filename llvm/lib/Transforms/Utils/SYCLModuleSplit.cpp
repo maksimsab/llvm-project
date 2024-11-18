@@ -72,28 +72,12 @@ EntryPointsGroupScope selectDeviceCodeGroupScope(IRSplitMode Mode) {
   llvm_unreachable("unsupported split mode");
 }
 
-// Return true if the function is a SPIRV or SYCL builtin, e.g.
-// _Z28__spirv_GlobalInvocationId_xv
-bool isSpirvSyclBuiltin(StringRef FName) {
-  if (!FName.consume_front("_Z"))
-    return false;
-  // now skip the digits
-  FName = FName.drop_while([](char C) { return std::isdigit(C); });
-
-  return FName.starts_with("__spirv_") || FName.starts_with("__sycl_");
-}
-
-// Return true if the function name starts with "__builtin_"
-bool isGenericBuiltin(StringRef FName) {
-  return FName.starts_with("__builtin_");
-}
-
 bool isKernel(const Function &F) {
   return F.getCallingConv() == CallingConv::SPIR_KERNEL ||
          F.getCallingConv() == CallingConv::AMDGPU_KERNEL;
 }
 
-bool isEntryPoint(const Function &F, bool EmitOnlyKernelsAsEntryPoints) {
+bool isEntryPoint(const Function &F) {
   // Skip declarations, if any: they should not be included into a vector of
   // entry points groups or otherwise we will end up with incorrectly generated
   // list of symbols.
@@ -101,21 +85,7 @@ bool isEntryPoint(const Function &F, bool EmitOnlyKernelsAsEntryPoints) {
     return false;
 
   // Kernels are always considered to be entry points
-  if (isKernel(F))
-    return true;
-
-  if (!EmitOnlyKernelsAsEntryPoints) {
-    // If not disabled, SYCL_EXTERNAL functions with sycl-module-id attribute
-    // are also considered as entry points (except __spirv_* and __sycl_*
-    // functions)
-    return llvm::isSYCLExternalFunction(&F) &&
-           !isSpirvSyclBuiltin(F.getName()) && !isGenericBuiltin(F.getName());
-  }
-
-  // Even if we are emitting only kernels as entry points, virtual functions
-  // should still be treated as entry points, because they are going to be
-  // outlined into separate device images and linked in later.
-  return F.hasFnAttribute("indirectly-callable");
+  return isKernel(F);
 }
 
 // Represents "dependency" or "use" graph of global objects (functions and
@@ -477,52 +447,16 @@ public:
     Rules.emplace_back(Rule::RKind::K_SimpleStringAttribute, AttrName);
   }
 
-  // Creates a simple rule, which adds a value of a string metadata into a
-  // resulting identifier.
-  void registerSimpleStringMetadataRule(StringRef MetadataName) {
-    Rules.emplace_back(Rule::RKind::K_SimpleStringMetadata, MetadataName);
-  }
-
-  // Creates a simple rule, which adds one or another value to a resulting
-  // identifier based on the presence of a metadata on a function.
-  void registerSimpleFlagAttributeRule(StringRef AttrName,
-                                       StringRef IfPresentStr,
-                                       StringRef IfAbsentStr = "") {
-    Rules.emplace_back(Rule::RKind::K_FlagAttribute,
-                       Rule::FlagRuleData{AttrName, IfPresentStr, IfAbsentStr});
-  }
-
-  // Creates a simple rule, which adds one or another value to a resulting
-  // identifier based on the presence of a metadata on a function.
-  void registerSimpleFlagMetadataRule(StringRef MetadataName,
-                                      StringRef IfPresentStr,
-                                      StringRef IfAbsentStr = "") {
-    Rules.emplace_back(
-        Rule::RKind::K_FlagMetadata,
-        Rule::FlagRuleData{MetadataName, IfPresentStr, IfAbsentStr});
-  }
-
   // Creates a rule, which adds a list of dash-separated integers converted
   // into strings listed in a metadata to a resulting identifier.
   void registerListOfIntegersInMetadataRule(StringRef MetadataName) {
     Rules.emplace_back(Rule::RKind::K_IntegersListMetadata, MetadataName);
   }
 
-  // Creates a rule, which adds a list of sorted dash-separated integers
-  // converted into strings listed in a metadata to a resulting identifier.
-  void registerListOfIntegersInMetadataSortedRule(StringRef MetadataName) {
-    Rules.emplace_back(Rule::RKind::K_SortedIntegersListMetadata, MetadataName);
-  }
-
 private:
   struct Rule {
-    struct FlagRuleData {
-      StringRef Name, IfPresentStr, IfAbsentStr;
-    };
-
   private:
-    std::variant<StringRef, FlagRuleData,
-                 std::function<std::string(const Function *)>>
+    std::variant<StringRef, std::function<std::string(const Function *)>>
         Storage;
 
   public:
@@ -532,15 +466,7 @@ private:
       // Copy value of the specified attribute, if present
       K_SimpleStringAttribute,
       // Copy value of the specified metadata, if present
-      K_SimpleStringMetadata,
-      // Use one or another string based on the specified metadata presence
-      K_FlagMetadata,
-      // Use one or another string based on the specified attribute presence
-      K_FlagAttribute,
-      // Concatenate and use list of integers from the specified metadata
       K_IntegersListMetadata,
-      // Sort, concatenate and use list of integers from the specified metadata
-      K_SortedIntegersListMetadata
     };
     RKind Kind;
 
@@ -550,13 +476,8 @@ private:
       switch (K) {
       case RKind::K_SimpleStringAttribute:
       case RKind::K_IntegersListMetadata:
-      case RKind::K_SimpleStringMetadata:
-      case RKind::K_SortedIntegersListMetadata:
         return 0;
       case RKind::K_Callback:
-        return 2;
-      case RKind::K_FlagMetadata:
-      case RKind::K_FlagAttribute:
         return 1;
       }
       // can't use llvm_unreachable in constexpr context
@@ -583,7 +504,6 @@ std::string FunctionsCategorizer::computeCategoryFor(const Function *F) const {
   for (const auto &R : Rules) {
     StringRef AttrName;
     StringRef MetadataName;
-    Rule::FlagRuleData Data;
 
     switch (R.Kind) {
     case Rule::RKind::K_Callback:
@@ -598,25 +518,6 @@ std::string FunctionsCategorizer::computeCategoryFor(const Function *F) const {
       }
       break;
 
-    case Rule::RKind::K_SimpleStringMetadata:
-      MetadataName = R.getStorage<Rule::RKind::K_SimpleStringMetadata>();
-      if (F->hasMetadata(MetadataName)) {
-        auto *MDN = F->getMetadata(MetadataName);
-        for (size_t I = 0, E = MDN->getNumOperands(); I < E; ++I) {
-          MDString *S = cast<llvm::MDString>(MDN->getOperand(I).get());
-          Result += "-" + S->getString().str();
-        }
-      }
-      break;
-
-    case Rule::RKind::K_FlagMetadata:
-      Data = R.getStorage<Rule::RKind::K_FlagMetadata>();
-      if (F->hasMetadata(Data.Name))
-        Result += Data.IfPresentStr;
-      else
-        Result += Data.IfAbsentStr;
-      break;
-
     case Rule::RKind::K_IntegersListMetadata:
       MetadataName = R.getStorage<Rule::RKind::K_IntegersListMetadata>();
       if (F->hasMetadata(MetadataName)) {
@@ -626,30 +527,6 @@ std::string FunctionsCategorizer::computeCategoryFor(const Function *F) const {
               "-" + std::to_string(
                         mdconst::extract<ConstantInt>(MDOp)->getZExtValue());
       }
-      break;
-
-    case Rule::RKind::K_SortedIntegersListMetadata:
-      MetadataName = R.getStorage<Rule::RKind::K_IntegersListMetadata>();
-      if (F->hasMetadata(MetadataName)) {
-        MDNode *MDN = F->getMetadata(MetadataName);
-
-        SmallVector<std::uint64_t, 8> Values;
-        for (const MDOperand &MDOp : MDN->operands())
-          Values.push_back(mdconst::extract<ConstantInt>(MDOp)->getZExtValue());
-
-        llvm::sort(Values);
-
-        for (std::uint64_t V : Values)
-          Result += "-" + std::to_string(V);
-      }
-      break;
-
-    case Rule::RKind::K_FlagAttribute:
-      Data = R.getStorage<Rule::RKind::K_FlagAttribute>();
-      if (F->hasFnAttribute(Data.Name))
-        Result += Data.IfPresentStr;
-      else
-        Result += Data.IfAbsentStr;
       break;
     }
 
@@ -661,9 +538,8 @@ std::string FunctionsCategorizer::computeCategoryFor(const Function *F) const {
 
 } // namespace
 
-static EntryPointGroupVec
-selectEntryPointGroups(const ModuleDesc &MD, IRSplitMode Mode,
-                       bool EmitOnlyKernelsAsEntryPoints) {
+static EntryPointGroupVec selectEntryPointGroups(const ModuleDesc &MD,
+                                                 IRSplitMode Mode) {
   FunctionsCategorizer Categorizer;
 
   EntryPointsGroupScope Scope = selectDeviceCodeGroupScope(Mode);
@@ -687,17 +563,6 @@ selectEntryPointGroups(const ModuleDesc &MD, IRSplitMode Mode,
     // This is core of per-source device code split
     Categorizer.registerSimpleStringAttributeRule(ATTR_SYCL_MODULE_ID);
 
-    // This attribute marks virtual functions and effectively dictates how they
-    // should be groupped together. By design we won't split those groups of
-    // virtual functions further even if functions from the same group use
-    // different optional features and therefore this rule is put here.
-    // Strictly speaking, we don't even care about module-id splitting for
-    // those, but to avoid that we need to refactor the whole categorizer.
-    // However, this is good enough as it is for an initial version.
-    // TODO: for AOT use case we shouldn't be outlining those and instead should
-    // only select those functions which are compatible with the target device
-    Categorizer.registerSimpleStringAttributeRule("indirectly-callable");
-
     // Optional features
     // Note: Add more rules at the end of the list to avoid chaning orders of
     // output files in existing tests.
@@ -717,7 +582,7 @@ selectEntryPointGroups(const ModuleDesc &MD, IRSplitMode Mode,
 
   // Only process module entry points:
   for (const auto &F : MD.getModule().functions()) {
-    if (!isEntryPoint(F, EmitOnlyKernelsAsEntryPoints))
+    if (!isEntryPoint(F))
       continue;
 
     std::string Key = Categorizer.computeCategoryFor(&F);
@@ -817,9 +682,7 @@ parseSYCLSplitModulesFromFile(StringRef File) {
 Expected<SmallVector<SYCLSplitModule, 0>>
 splitSYCLModule(std::unique_ptr<Module> M, ModuleSplitterSettings Settings) {
   ModuleDesc MD = std::move(M);
-  EntryPointGroupVec Groups =
-      selectEntryPointGroups(MD, Settings.Mode,
-                             /*EmitOnlyKernelsAsEntryPoints=*/false);
+  EntryPointGroupVec Groups = selectEntryPointGroups(MD, Settings.Mode);
 
   SmallVector<SYCLSplitModule, 0> OutputImages;
   if (Groups.size() < 2) {
