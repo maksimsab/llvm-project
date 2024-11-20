@@ -47,30 +47,6 @@ using namespace llvm;
 #define DEBUG_TYPE "sycl_module_split"
 
 namespace {
-// Identifying name for global scope
-constexpr char GLOBAL_SCOPE_NAME[] = "<GLOBAL>";
-
-EntryPointsGroupScope selectDeviceCodeGroupScope(IRSplitMode Mode) {
-  switch (Mode) {
-  case IRSplitMode::IRSM_PER_TU:
-    return Scope_PerModule;
-
-  case IRSplitMode::IRSM_PER_KERNEL:
-    return Scope_PerKernel;
-
-  case IRSplitMode::IRSM_AUTO: {
-    // At the moment, we assume that per-source split is the best way of
-    // splitting device code and can always be used except for cases handled
-    // above.
-    return Scope_PerModule;
-  }
-
-  case IRSplitMode::IRSM_NONE:
-    return Scope_Global;
-  }
-
-  llvm_unreachable("unsupported split mode");
-}
 
 bool isKernel(const Function &F) {
   return F.getCallingConv() == CallingConv::SPIR_KERNEL ||
@@ -307,8 +283,6 @@ namespace llvm {
 std::optional<IRSplitMode> convertStringToSplitMode(StringRef S) {
   static const StringMap<IRSplitMode> Values = {
       {"kernel", IRSplitMode::IRSM_PER_KERNEL},
-      {"source", IRSplitMode::IRSM_PER_TU},
-      {"auto", IRSplitMode::IRSM_AUTO},
       {"none", IRSplitMode::IRSM_NONE}};
 
   auto It = Values.find(S);
@@ -359,191 +333,29 @@ std::string ModuleDesc::makeSymbolTable() const {
   return ST;
 }
 
-namespace {
-// This is a helper class, which allows to group/categorize function based on
-// provided rules. It is intended to be used in device code split
-// implementation.
-//
-// "Rule" is a simple routine, which returns a string for an llvm::Function
-// passed to it. There could be more than one rule and they are applied in order
-// of their registration. Results obtained from those rules are concatenated
-// together to produce the final result.
-//
-// There are some predefined rules for the most popular use-cases, like grouping
-// functions together based on an attribute value or presence of a metadata.
-// However, there is also a possibility to register a custom callback function
-// as a rule, to implement custom/more complex logic.
-class FunctionsCategorizer {
-public:
-  FunctionsCategorizer() = default;
-
-  std::string computeCategoryFor(const Function *) const;
-
-  // Accepts a callback, which should return a string based on provided
-  // function, which will be used as an entry points group identifier.
-  void
-  registerRule(const std::function<std::string(const Function *)> &Callback) {
-    Rules.emplace_back(Rule::RKind::K_Callback, Callback);
-  }
-
-  // Creates a simple rule, which adds a value of a string attribute into a
-  // resulting identifier.
-  void registerSimpleStringAttributeRule(StringRef AttrName) {
-    Rules.emplace_back(Rule::RKind::K_SimpleStringAttribute, AttrName);
-  }
-
-  // Creates a rule, which adds a list of dash-separated integers converted
-  // into strings listed in a metadata to a resulting identifier.
-  void registerListOfIntegersInMetadataRule(StringRef MetadataName) {
-    Rules.emplace_back(Rule::RKind::K_IntegersListMetadata, MetadataName);
-  }
-
-private:
-  struct Rule {
-  private:
-    std::variant<StringRef, std::function<std::string(const Function *)>>
-        Storage;
-
-  public:
-    enum class RKind {
-      // Custom callback function
-      K_Callback,
-      // Copy value of the specified attribute, if present
-      K_SimpleStringAttribute,
-      // Copy value of the specified metadata, if present
-      K_IntegersListMetadata,
-    };
-    RKind Kind;
-
-    // Returns an index into std::variant<...> Storage defined above, which
-    // corresponds to the specified rule Kind.
-    constexpr static std::size_t storage_index(RKind K) {
-      switch (K) {
-      case RKind::K_SimpleStringAttribute:
-      case RKind::K_IntegersListMetadata:
-        return 0;
-      case RKind::K_Callback:
-        return 1;
-      }
-      // can't use llvm_unreachable in constexpr context
-      return std::variant_npos;
-    }
-
-    template <RKind K> auto getStorage() const {
-      return std::get<storage_index(K)>(Storage);
-    }
-
-    template <typename... Args>
-    Rule(RKind K, Args... args) : Storage(args...), Kind(K) {
-      assert(storage_index(K) == Storage.index());
-    }
-
-    Rule(Rule &&Other) = default;
-  };
-
-  SmallVector<Rule, 0> Rules;
-};
-
-std::string FunctionsCategorizer::computeCategoryFor(const Function *F) const {
-  SmallString<256> Result;
-  for (const auto &R : Rules) {
-    StringRef AttrName;
-    StringRef MetadataName;
-
-    switch (R.Kind) {
-    case Rule::RKind::K_Callback:
-      Result += R.getStorage<Rule::RKind::K_Callback>()(F);
-      break;
-
-    case Rule::RKind::K_SimpleStringAttribute:
-      AttrName = R.getStorage<Rule::RKind::K_SimpleStringAttribute>();
-      if (F->hasFnAttribute(AttrName)) {
-        Attribute Attr = F->getFnAttribute(AttrName);
-        Result += Attr.getValueAsString();
-      }
-      break;
-
-    case Rule::RKind::K_IntegersListMetadata:
-      MetadataName = R.getStorage<Rule::RKind::K_IntegersListMetadata>();
-      if (F->hasMetadata(MetadataName)) {
-        auto *MDN = F->getMetadata(MetadataName);
-        for (const MDOperand &MDOp : MDN->operands())
-          Result +=
-              "-" + std::to_string(
-                        mdconst::extract<ConstantInt>(MDOp)->getZExtValue());
-      }
-      break;
-    }
-
-    Result += "-";
-  }
-
-  return static_cast<std::string>(Result);
-}
-
-} // namespace
-
-static EntryPointGroupVec selectEntryPointGroups(const ModuleDesc &MD,
-                                                 IRSplitMode Mode) {
-  FunctionsCategorizer Categorizer;
-
-  EntryPointsGroupScope Scope = selectDeviceCodeGroupScope(Mode);
-
-  switch (Scope) {
-  case Scope_Global:
-    // We simply perform entry points filtering, but group all of them together.
-    Categorizer.registerRule(
-        [](const Function *) -> std::string { return GLOBAL_SCOPE_NAME; });
-    break;
-  case Scope_PerKernel:
-    // Per-kernel split is quite simple: every kernel goes into a separate
-    // module and that's it, no other rules required.
-    Categorizer.registerRule(
-        [](const Function *F) -> std::string { return F->getName().str(); });
-    break;
-  case Scope_PerModule:
-    // The most complex case, because we should account for many other features
-    // like aspects used in a kernel, large-grf mode, reqd-work-group-size, etc.
-
-    // This is core of per-source device code split
-    Categorizer.registerSimpleStringAttributeRule(ATTR_SYCL_MODULE_ID);
-
-    // Optional features
-    // Note: Add more rules at the end of the list to avoid chaning orders of
-    // output files in existing tests.
-    Categorizer.registerSimpleStringAttributeRule("sycl-register-alloc-mode");
-    Categorizer.registerSimpleStringAttributeRule("sycl-grf-size");
-    Categorizer.registerListOfIntegersInMetadataRule("reqd_work_group_size");
-    Categorizer.registerListOfIntegersInMetadataRule("work_group_num_dim");
-    Categorizer.registerListOfIntegersInMetadataRule(
-        "intel_reqd_sub_group_size");
-    Categorizer.registerSimpleStringAttributeRule(ATTR_SYCL_OPTLEVEL);
-    break;
-  }
-
+static EntryPointGroupVec selectEntryPointGroups(const ModuleDesc &MD) {
   // std::map is used here to ensure stable ordering of entry point groups,
   // which is based on their contents, this greatly helps LIT tests
-  std::map<std::string, EntryPointSet> EntryPointsMap;
+  std::map<StringRef, EntryPointSet> EntryPointsMap;
 
   // Only process module entry points:
   for (const auto &F : MD.getModule().functions()) {
     if (!isEntryPoint(F))
       continue;
 
-    std::string Key = Categorizer.computeCategoryFor(&F);
+    StringRef Key = F.getName();
     EntryPointsMap[std::move(Key)].insert(&F);
   }
 
   EntryPointGroupVec Groups;
   if (EntryPointsMap.empty()) {
     // No entry points met, record this.
-    Groups.emplace_back(GLOBAL_SCOPE_NAME, EntryPointSet{});
+    Groups.emplace_back("-", EntryPointSet());
   } else {
     Groups.reserve(EntryPointsMap.size());
     // Start with properties of a source module
-    EntryPointGroup::Properties MDProps = MD.getEntryPointGroup().Props;
     for (auto &[Key, EntryPoints] : EntryPointsMap)
-      Groups.emplace_back(Key, std::move(EntryPoints), MDProps);
+      Groups.emplace_back(Key, std::move(EntryPoints));
   }
 
   return Groups;
@@ -627,9 +439,19 @@ parseSYCLSplitModulesFromFile(StringRef File) {
 Expected<SmallVector<SYCLSplitModule, 0>>
 splitSYCLModule(std::unique_ptr<Module> M, ModuleSplitterSettings Settings) {
   ModuleDesc MD = std::move(M);
-  EntryPointGroupVec Groups = selectEntryPointGroups(MD, Settings.Mode);
-
   SmallVector<SYCLSplitModule, 0> OutputImages;
+  if (Settings.Mode == IRSplitMode::IRSM_NONE) {
+    std::string OutIRFileName = (Settings.OutputPrefix + Twine("_0")).str();
+    auto ImageOrErr =
+        saveModuleDesc(MD, OutIRFileName, Settings.OutputAssembly);
+    if (!ImageOrErr)
+      return ImageOrErr.takeError();
+
+    OutputImages.emplace_back(std::move(*ImageOrErr));
+    return OutputImages;
+  }
+
+  EntryPointGroupVec Groups = selectEntryPointGroups(MD);
   if (Groups.size() < 2) {
     // FIXME(maksimsab): this branch is not tested yet.
     std::string OutIRFileName = (Settings.OutputPrefix + Twine("_0")).str();

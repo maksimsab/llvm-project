@@ -28,9 +28,7 @@ class Function;
 class Module;
 
 enum class IRSplitMode {
-  IRSM_PER_TU,     // one module per translation unit
   IRSM_PER_KERNEL, // one module per kernel
-  IRSM_AUTO,       // automatically select split mode
   IRSM_NONE        // no splitting
 };
 
@@ -41,33 +39,15 @@ std::optional<IRSplitMode> convertStringToSplitMode(StringRef S);
 // A vector that contains all entry point functions in a split module.
 using EntryPointSet = SetVector<const Function *>;
 
-/// Describes scope covered by each entry in the module-entry points map
-/// populated by the groupEntryPointsByScope function.
-enum EntryPointsGroupScope {
-  Scope_PerKernel, // one entry per kernel
-  Scope_PerModule, // one entry per module
-  Scope_Global     // single entry in the map for all kernels
-};
-
 /// Represents a named group of device code entry points - kernels and
 /// SYCL_EXTERNAL functions.
 struct EntryPointGroup {
-  // Properties an entry point (EP) group
-  struct Properties {
-    // Scope represented by EPs in a group
-    EntryPointsGroupScope Scope = Scope_Global;
-  };
-
   std::string GroupId;
   EntryPointSet Functions;
-  Properties Props;
 
   EntryPointGroup(StringRef GroupId = "") : GroupId(GroupId) {}
   EntryPointGroup(StringRef GroupId, EntryPointSet Functions)
       : GroupId(GroupId), Functions(std::move(Functions)) {}
-  EntryPointGroup(StringRef GroupId, EntryPointSet Functions,
-                  const Properties &Props)
-      : GroupId(GroupId), Functions(std::move(Functions)), Props(Props) {}
 };
 
 // TODO: move it into cpp file.

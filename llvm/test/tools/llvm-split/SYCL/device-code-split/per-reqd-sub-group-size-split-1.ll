@@ -1,41 +1,13 @@
+; The test checks that Module splitting correctly separates kernels
+; that use reqd_sub_group_size attributes from kernels which doesn't use them
+; regardless of device code split mode
+
 ; This test emulates two translation units with 3 kernels:
 ; TU0_kernel0 - 1st translation unit, no reqd_sub_group_size attribute used
 ; TU0_kernel1 - 1st translation unit, reqd_sub_group_size attribute is used
 ; TU1_kernel2 - 2nd translation unit, no reqd_sub_group_size attribute used
 
-; The test is intended to check that sycl-post-link correctly separates kernels
-; that use reqd_sub_group_size attributes from kernels which doesn't use them
-; regardless of device code split mode
-
-; RUN: llvm-split -sycl-split=auto -S %s -o %t
-; RUN: FileCheck %s -input-file=%t_0.ll --check-prefixes CHECK-M0-IR \
-; RUN: --implicit-check-not kernel0 --implicit-check-not kernel1
-; RUN: FileCheck %s -input-file=%t_1.ll --check-prefixes CHECK-M1-IR \
-; RUN: --implicit-check-not kernel0 --implicit-check-not kernel2
-; RUN: FileCheck %s -input-file=%t_2.ll --check-prefixes CHECK-M2-IR \
-; RUN: --implicit-check-not kernel1 --implicit-check-not kernel2
-; RUN: FileCheck %s -input-file=%t_0.sym --check-prefixes CHECK-M0-SYMS \
-; RUN: --implicit-check-not kernel0 --implicit-check-not kernel1
-; RUN: FileCheck %s -input-file=%t_1.sym --check-prefixes CHECK-M1-SYMS \
-; RUN: --implicit-check-not kernel0 --implicit-check-not kernel2
-; RUN: FileCheck %s -input-file=%t_2.sym --check-prefixes CHECK-M2-SYMS \
-; RUN: --implicit-check-not kernel1 --implicit-check-not kernel2
-
 ; RUN: llvm-split -sycl-split=kernel -S %s -o %t
-; RUN: FileCheck %s -input-file=%t_0.ll --check-prefixes CHECK-M0-IR \
-; RUN: --implicit-check-not kernel0 --implicit-check-not kernel1
-; RUN: FileCheck %s -input-file=%t_1.ll --check-prefixes CHECK-M1-IR \
-; RUN: --implicit-check-not kernel0 --implicit-check-not kernel2
-; RUN: FileCheck %s -input-file=%t_2.ll --check-prefixes CHECK-M2-IR \
-; RUN: --implicit-check-not kernel1 --implicit-check-not kernel2
-; RUN: FileCheck %s -input-file=%t_0.sym --check-prefixes CHECK-M0-SYMS \
-; RUN: --implicit-check-not kernel0 --implicit-check-not kernel1
-; RUN: FileCheck %s -input-file=%t_1.sym --check-prefixes CHECK-M1-SYMS \
-; RUN: --implicit-check-not kernel0 --implicit-check-not kernel2
-; RUN: FileCheck %s -input-file=%t_2.sym --check-prefixes CHECK-M2-SYMS \
-; RUN: --implicit-check-not kernel1 --implicit-check-not kernel2
-
-; RUN: llvm-split -sycl-split=source -S %s -o %t
 ; RUN: FileCheck %s -input-file=%t_0.ll --check-prefixes CHECK-M0-IR \
 ; RUN: --implicit-check-not kernel0 --implicit-check-not kernel1
 ; RUN: FileCheck %s -input-file=%t_1.ll --check-prefixes CHECK-M1-IR \

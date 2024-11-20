@@ -1,31 +1,10 @@
-; Purpose of this test is to check that sycl-post-link does not treat
-; declarations as entry points.
+; The test checks that Module splitting does not treat declarations as entry points.
 
-; RUN: llvm-split -sycl-split=source -S < %s -o %t
-; RUN: FileCheck %s -input-file=%t.table --check-prefix CHECK-PER-SOURCE-TABLE
-; RUN: FileCheck %s -input-file=%t_0.sym --check-prefix CHECK-PER-SOURCE-SYM0
-; RUN: FileCheck %s -input-file=%t_1.sym --check-prefix CHECK-PER-SOURCE-SYM1
-;
 ; RUN: llvm-split -sycl-split=kernel -S < %s -o %t2
 ; RUN: FileCheck %s -input-file=%t2.table --check-prefix CHECK-PER-KERNEL-TABLE
 ; RUN: FileCheck %s -input-file=%t2_0.sym --check-prefix CHECK-PER-KERNEL-SYM1
 ; RUN: FileCheck %s -input-file=%t2_1.sym --check-prefix CHECK-PER-KERNEL-SYM2
 ; RUN: FileCheck %s -input-file=%t2_2.sym --check-prefix CHECK-PER-KERNEL-SYM0
-
-; With per-source split, there should be two device images
-; CHECK-PER-SOURCE-TABLE: [Code|Symbols]
-; CHECK-PER-SOURCE-TABLE: {{.*}}_0.ll|{{.*}}_0.sym
-; CHECK-PER-SOURCE-TABLE-NEXT: {{.*}}_1.ll|{{.*}}_1.sym
-; CHECK-PER-SOURCE-TABLE-EMPTY:
-;
-; CHECK-PER-SOURCE-SYM1-NOT: _ZTS4mainE10TU1_kernel1
-; CHECK-PER-SOURCE-SYM1: _ZTSZ4mainE11TU0_kernel0
-; CHECK-PER-SOURCE-SYM1-NEXT: _ZTSZ4mainE11TU0_kernel1
-; CHECK-PER-SOURCE-SYM1-EMPTY:
-;
-; CHECK-PER-SOURCE-SYM0-NOT: _ZTS4mainE10TU1_kernel1
-; CHECK-PER-SOURCE-SYM0: _ZTSZ4mainE10TU1_kernel0
-; CHECK-PER-SOURCE-SYM0-EMPTY:
 
 ; With per-kernel split, there should be three device images
 ; CHECK-PER-KERNEL-TABLE: [Code|Symbols]
