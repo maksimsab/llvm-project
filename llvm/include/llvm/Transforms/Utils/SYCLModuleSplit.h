@@ -36,53 +36,6 @@ enum class IRSplitMode {
 /// returned.
 std::optional<IRSplitMode> convertStringToSplitMode(StringRef S);
 
-// A vector that contains all entry point functions in a split module.
-using EntryPointSet = SetVector<const Function *>;
-
-/// Represents a named group of device code entry points - kernels and
-/// SYCL_EXTERNAL functions.
-struct EntryPointGroup {
-  std::string GroupId;
-  EntryPointSet Functions;
-
-  EntryPointGroup(StringRef GroupId = "") : GroupId(GroupId) {}
-  EntryPointGroup(StringRef GroupId, EntryPointSet Functions)
-      : GroupId(GroupId), Functions(std::move(Functions)) {}
-};
-
-// TODO: move it into cpp file.
-/// Annotates an llvm::Module with information necessary to perform and track
-/// result of device code (llvm::Module instances) splitting:
-/// - entry points of the module determined e.g. by a module splitter, as well
-///   as information about entry point origin (e.g. result of a scoped split)
-/// - its properties, such as whether it has specialization constants uses
-/// It also provides convenience functions for entry point set transformation
-/// between llvm::Function object and string representations.
-class ModuleDesc {
-  std::unique_ptr<Module> M;
-  EntryPointGroup EntryPoints;
-
-public:
-  ModuleDesc(std::unique_ptr<Module> M) : M(std::move(M)) {}
-
-  ModuleDesc(std::unique_ptr<Module> M, EntryPointGroup EntryPoints)
-      : M(std::move(M)), EntryPoints(std::move(EntryPoints)) {}
-
-  const EntryPointSet &entries() const { return EntryPoints.Functions; }
-  const EntryPointGroup &getEntryPointGroup() const { return EntryPoints; }
-  EntryPointSet &entries() { return EntryPoints.Functions; }
-  Module &getModule() { return *M; }
-  const Module &getModule() const { return *M; }
-  std::unique_ptr<Module> releaseModulePtr() { return std::move(M); }
-
-  // Cleans up module IR - removes dead globals, debug info etc.
-  void cleanup();
-
-  std::string makeSymbolTable() const;
-
-  void dump() const;
-};
-
 /// The structure represents a split LLVM Module accompanied by additional
 /// information. Split Modules are being stored at disk due to the high RAM
 /// consumption during the whole splitting process.

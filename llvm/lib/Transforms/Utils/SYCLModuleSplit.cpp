@@ -46,14 +46,12 @@ using namespace llvm;
 
 #define DEBUG_TYPE "sycl_module_split"
 
-namespace {
-
-bool isKernel(const Function &F) {
+static bool isKernel(const Function &F) {
   return F.getCallingConv() == CallingConv::SPIR_KERNEL ||
          F.getCallingConv() == CallingConv::AMDGPU_KERNEL;
 }
 
-bool isEntryPoint(const Function &F) {
+static bool isEntryPoint(const Function &F) {
   // Skip declarations, if any: they should not be included into a vector of
   // entry points groups or otherwise we will end up with incorrectly generated
   // list of symbols.
@@ -63,6 +61,89 @@ bool isEntryPoint(const Function &F) {
   // Kernels are always considered to be entry points
   return isKernel(F);
 }
+
+namespace {
+
+// A vector that contains all entry point functions in a split module.
+using EntryPointSet = SetVector<const Function *>;
+
+/// Represents a named group of device code entry points - kernels and
+/// SYCL_EXTERNAL functions.
+struct EntryPointGroup {
+  std::string GroupId;
+  EntryPointSet Functions;
+
+  EntryPointGroup(StringRef GroupId = "") : GroupId(GroupId) {}
+  EntryPointGroup(StringRef GroupId, EntryPointSet Functions)
+      : GroupId(GroupId), Functions(std::move(Functions)) {}
+
+  void dump() const {
+    constexpr size_t INDENT = 4;
+    dbgs().indent(INDENT) << "ENTRY POINTS"
+                          << " " << GroupId << " {\n";
+    for (const Function *F : Functions)
+      dbgs().indent(INDENT) << "  " << F->getName() << "\n";
+
+    dbgs().indent(INDENT) << "}\n";
+  }
+};
+
+/// Annotates an llvm::Module with information necessary to perform and track
+/// result of device code (llvm::Module instances) splitting:
+/// - entry points of the module determined e.g. by a module splitter, as well
+///   as information about entry point origin (e.g. result of a scoped split)
+/// - its properties, such as whether it has specialization constants uses
+/// It also provides convenience functions for entry point set transformation
+/// between llvm::Function object and string representations.
+class ModuleDesc {
+  std::unique_ptr<Module> M;
+  EntryPointGroup EntryPoints;
+
+public:
+  ModuleDesc(std::unique_ptr<Module> M) : M(std::move(M)) {}
+
+  ModuleDesc(std::unique_ptr<Module> M, EntryPointGroup EntryPoints)
+      : M(std::move(M)), EntryPoints(std::move(EntryPoints)) {}
+
+  const EntryPointSet &entries() const { return EntryPoints.Functions; }
+  const EntryPointGroup &getEntryPointGroup() const { return EntryPoints; }
+  EntryPointSet &entries() { return EntryPoints.Functions; }
+  Module &getModule() { return *M; }
+  const Module &getModule() const { return *M; }
+  std::unique_ptr<Module> releaseModulePtr() { return std::move(M); }
+
+  // Cleans up module IR - removes dead globals, debug info etc.
+  void cleanup() {
+    // Externalize them so they are not dropped by GlobalDCE
+    for (Function &F : *M)
+      if (F.hasFnAttribute("indirectly-callable"))
+        F.setLinkage(GlobalValue::LinkageTypes::ExternalLinkage);
+
+    ModuleAnalysisManager MAM;
+    MAM.registerPass([&] { return PassInstrumentationAnalysis(); });
+    ModulePassManager MPM;
+    // Do cleanup.
+    MPM.addPass(GlobalDCEPass());           // Delete unreachable globals.
+    MPM.addPass(StripDeadDebugInfoPass());  // Remove dead debug info.
+    MPM.addPass(StripDeadPrototypesPass()); // Remove dead func decls.
+    MPM.run(*M, MAM);
+  }
+
+  std::string makeSymbolTable() const {
+    std::string ST;
+    for (const Function *F : EntryPoints.Functions)
+      ST += (Twine(F->getName()) + "\n").str();
+
+    return ST;
+  }
+
+  void dump() const {
+    assert(M && "dump of empty ModuleDesc");
+    dbgs() << "split_module::ModuleDesc[" << M->getName() << "] {\n";
+    EntryPoints.dump();
+    dbgs() << "}\n";
+  }
+};
 
 // Represents "dependency" or "use" graph of global objects (functions and
 // global variables) in a module. It is used during device code split to
@@ -278,61 +359,6 @@ public:
 
 } // namespace
 
-namespace llvm {
-
-std::optional<IRSplitMode> convertStringToSplitMode(StringRef S) {
-  static const StringMap<IRSplitMode> Values = {
-      {"kernel", IRSplitMode::IRSM_PER_KERNEL},
-      {"none", IRSplitMode::IRSM_NONE}};
-
-  auto It = Values.find(S);
-  if (It == Values.end())
-    return std::nullopt;
-
-  return It->second;
-}
-
-static void dumpEntryPoints(const EntryPointSet &C, std::string_view Msg) {
-  constexpr size_t INDENT = 4;
-  dbgs().indent(INDENT) << "ENTRY POINTS"
-                        << " " << Msg << " {\n";
-  for (const Function *F : C)
-    dbgs().indent(INDENT) << "  " << F->getName() << "\n";
-
-  dbgs().indent(INDENT) << "}\n";
-}
-
-void ModuleDesc::cleanup() {
-  // Externalize them so they are not dropped by GlobalDCE
-  for (Function &F : *M)
-    if (F.hasFnAttribute("indirectly-callable"))
-      F.setLinkage(GlobalValue::LinkageTypes::ExternalLinkage);
-
-  ModuleAnalysisManager MAM;
-  MAM.registerPass([&] { return PassInstrumentationAnalysis(); });
-  ModulePassManager MPM;
-  // Do cleanup.
-  MPM.addPass(GlobalDCEPass());           // Delete unreachable globals.
-  MPM.addPass(StripDeadDebugInfoPass());  // Remove dead debug info.
-  MPM.addPass(StripDeadPrototypesPass()); // Remove dead func decls.
-  MPM.run(*M, MAM);
-}
-
-void ModuleDesc::dump() const {
-  assert(M && "dump of empty ModuleDesc");
-  dbgs() << "split_module::ModuleDesc[" << M->getName() << "] {\n";
-  dumpEntryPoints(entries(), EntryPoints.GroupId.c_str());
-  dbgs() << "}\n";
-}
-
-std::string ModuleDesc::makeSymbolTable() const {
-  std::string ST;
-  for (const Function *F : EntryPoints.Functions)
-    ST += (Twine(F->getName()) + "\n").str();
-
-  return ST;
-}
-
 static EntryPointGroupVec selectEntryPointGroups(const ModuleDesc &MD) {
   // std::map is used here to ensure stable ordering of entry point groups,
   // which is based on their contents, this greatly helps LIT tests
@@ -434,6 +460,20 @@ parseSYCLSplitModulesFromFile(StringRef File) {
   }
 
   return Modules;
+}
+
+namespace llvm {
+
+std::optional<IRSplitMode> convertStringToSplitMode(StringRef S) {
+  static const StringMap<IRSplitMode> Values = {
+      {"kernel", IRSplitMode::IRSM_PER_KERNEL},
+      {"none", IRSplitMode::IRSM_NONE}};
+
+  auto It = Values.find(S);
+  if (It == Values.end())
+    return std::nullopt;
+
+  return It->second;
 }
 
 Expected<SmallVector<SYCLSplitModule, 0>>
