@@ -23,9 +23,6 @@
 
 namespace llvm {
 
-constexpr char ATTR_SYCL_MODULE_ID[] = "sycl-module-id";
-constexpr char ATTR_SYCL_OPTLEVEL[] = "sycl-optlevel";
-
 using CallGraphNodeAction = ::std::function<void(Function *)>;
 using CallGraphFunctionFilter =
     std::function<bool(const Instruction *, const Function *)>;
@@ -71,10 +68,6 @@ void traverseCallgraphUp(
   SmallPtrSet<Function *, 32> Visited;
   traverseCallgraphUp(F, CallGraphNodeAction(ActionF), Visited,
                       ErrorOnNonCallUse, functionFilter);
-}
-
-inline bool isSYCLExternalFunction(const Function *F) {
-  return F->hasFnAttribute(ATTR_SYCL_MODULE_ID);
 }
 
 /// Removes the global variable "llvm.used" and returns true on success.

@@ -89,9 +89,9 @@ struct EntryPointGroup {
 };
 
 /// Annotates an llvm::Module with information necessary to perform and track
-/// result of device code (llvm::Module instances) splitting:
+/// the result of device code (llvm::Module instances) splitting:
 /// - entry points of the module determined e.g. by a module splitter, as well
-///   as information about entry point origin (e.g. result of a scoped split)
+///   as information about entry point's origin (e.g. result of a scoped split)
 /// - its properties, such as whether it has specialization constants uses
 /// It also provides convenience functions for entry point set transformation
 /// between llvm::Function object and string representations.
@@ -359,18 +359,37 @@ public:
 
 } // namespace
 
-static EntryPointGroupVec selectEntryPointGroups(const ModuleDesc &MD) {
+/// Gets attached attribute value if it is present. Otherwise returns empty
+/// stirng.
+static StringRef computeFunctionCategoryFromStringMetadata(const Function &F,
+                                                           StringRef AttrName) {
+  return F.getFnAttribute(AttrName).getValueAsString();
+}
+
+static EntryPointGroupVec selectEntryPointGroups(const ModuleDesc &MD,
+                                                 IRSplitMode Mode) {
   // std::map is used here to ensure stable ordering of entry point groups,
   // which is based on their contents, this greatly helps LIT tests
-  std::map<StringRef, EntryPointSet> EntryPointsMap;
+  std::map<std::string, EntryPointSet> EntryPointsMap;
 
-  // Only process module entry points:
+  static constexpr char ATTR_SYCL_MODULE_ID[] = "sycl-module-id";
   for (const auto &F : MD.getModule().functions()) {
     if (!isEntryPoint(F))
       continue;
 
-    StringRef Key = F.getName();
-    EntryPointsMap[std::move(Key)].insert(&F);
+    std::string Key;
+    switch (Mode) {
+    case IRSplitMode::IRSM_PER_KERNEL:
+      Key = F.getName();
+      break;
+    case IRSplitMode::IRSM_PER_TU:
+      Key = computeFunctionCategoryFromStringMetadata(F, ATTR_SYCL_MODULE_ID);
+      break;
+    case IRSplitMode::IRSM_NONE:
+      llvm_unreachable("");
+    }
+
+    EntryPointsMap[Key].insert(&F);
   }
 
   EntryPointGroupVec Groups;
@@ -419,6 +438,8 @@ saveModuleDesc(ModuleDesc &MD, std::string Prefix, bool OutputAssembly) {
   return SM;
 }
 
+namespace llvm {
+
 Expected<SmallVector<SYCLSplitModule, 0>>
 parseSYCLSplitModulesFromFile(StringRef File) {
   auto EntriesMBOrErr = llvm::MemoryBuffer::getFile(File);
@@ -462,10 +483,9 @@ parseSYCLSplitModulesFromFile(StringRef File) {
   return Modules;
 }
 
-namespace llvm {
-
 std::optional<IRSplitMode> convertStringToSplitMode(StringRef S) {
   static const StringMap<IRSplitMode> Values = {
+      {"source", IRSplitMode::IRSM_PER_TU},
       {"kernel", IRSplitMode::IRSM_PER_KERNEL},
       {"none", IRSplitMode::IRSM_NONE}};
 
@@ -491,7 +511,7 @@ splitSYCLModule(std::unique_ptr<Module> M, ModuleSplitterSettings Settings) {
     return OutputImages;
   }
 
-  EntryPointGroupVec Groups = selectEntryPointGroups(MD);
+  EntryPointGroupVec Groups = selectEntryPointGroups(MD, Settings.Mode);
   if (Groups.size() < 2) {
     // FIXME(maksimsab): this branch is not tested yet.
     std::string OutIRFileName = (Settings.OutputPrefix + Twine("_0")).str();

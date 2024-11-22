@@ -76,12 +76,14 @@ static cl::opt<std::string>
     MCPU("mcpu", cl::desc("Target CPU, ignored if -mtriple is not used"),
          cl::value_desc("cpu"), cl::cat(SplitCategory));
 
-cl::opt<IRSplitMode>
-    SYCLSplitMode("sycl-split", cl::desc("module split mode"), cl::Optional,
-                  cl::init(IRSplitMode::IRSM_NONE),
-                  cl::values(clEnumValN(IRSplitMode::IRSM_PER_KERNEL, "kernel",
-                                        "1 output module per kernel")),
-                  cl::cat(SplitCategory));
+cl::opt<IRSplitMode> SYCLSplitMode(
+    "sycl-split", cl::desc("module split mode"), cl::Optional,
+    cl::init(IRSplitMode::IRSM_NONE),
+    cl::values(clEnumValN(IRSplitMode::IRSM_PER_TU, "source",
+                          "1 ouptput module per translation unit"),
+               clEnumValN(IRSplitMode::IRSM_PER_KERNEL, "kernel",
+                          "1 output module per kernel")),
+    cl::cat(SplitCategory));
 
 cl::opt<bool> OutputAssembly{"S", cl::desc("Write output as LLVM assembly"),
                              cl::cat(SplitCategory)};

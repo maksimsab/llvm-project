@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// Functionality to split a module into call graphs. A callgraph here is a set
+// Functionality to split a module into callgraphs. A callgraph here is a set
 // of entry points with all functions reachable from them via a call. The result
 // of the split is new modules containing corresponding callgraph.
 //===----------------------------------------------------------------------===//
@@ -13,9 +13,7 @@
 #ifndef LLVM_SYCL_MODULE_SPLIT_H
 #define LLVM_SYCL_MODULE_SPLIT_H
 
-#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/IR/Function.h"
 #include "llvm/Support/Error.h"
 
 #include <memory>
@@ -24,10 +22,10 @@
 
 namespace llvm {
 
-class Function;
 class Module;
 
 enum class IRSplitMode {
+  IRSM_PER_TU,     // one module per translation unit
   IRSM_PER_KERNEL, // one module per kernel
   IRSM_NONE        // no splitting
 };
