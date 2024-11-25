@@ -67,20 +67,25 @@ namespace {
 // A vector that contains all entry point functions in a split module.
 using EntryPointSet = SetVector<const Function *>;
 
-/// Represents a named group of device code entry points - kernels and
-/// SYCL_EXTERNAL functions.
+/// Represents a named group entry points.
 struct EntryPointGroup {
-  std::string GroupId;
+  std::string GroupName;
   EntryPointSet Functions;
 
-  EntryPointGroup(StringRef GroupId = "") : GroupId(GroupId) {}
-  EntryPointGroup(StringRef GroupId, EntryPointSet Functions)
-      : GroupId(GroupId), Functions(std::move(Functions)) {}
+  EntryPointGroup() = default;
+  EntryPointGroup(const EntryPointGroup &) = default;
+  EntryPointGroup &operator=(const EntryPointGroup &) = default;
+  EntryPointGroup(EntryPointGroup &&) = default;
+  EntryPointGroup &operator=(EntryPointGroup &&) = default;
+
+  EntryPointGroup(StringRef GroupName,
+                  EntryPointSet Functions = EntryPointSet())
+      : GroupName(GroupName), Functions(std::move(Functions)) {}
 
   void dump() const {
     constexpr size_t INDENT = 4;
     dbgs().indent(INDENT) << "ENTRY POINTS"
-                          << " " << GroupId << " {\n";
+                          << " " << GroupName << " {\n";
     for (const Function *F : Functions)
       dbgs().indent(INDENT) << "  " << F->getName() << "\n";
 
@@ -90,9 +95,7 @@ struct EntryPointGroup {
 
 /// Annotates an llvm::Module with information necessary to perform and track
 /// the result of device code (llvm::Module instances) splitting:
-/// - entry points of the module determined e.g. by a module splitter, as well
-///   as information about entry point's origin (e.g. result of a scoped split)
-/// - its properties, such as whether it has specialization constants uses
+/// - entry points group from the module.
 /// It also provides convenience functions for entry point set transformation
 /// between llvm::Function object and string representations.
 class ModuleDesc {
@@ -100,29 +103,29 @@ class ModuleDesc {
   EntryPointGroup EntryPoints;
 
 public:
-  ModuleDesc(std::unique_ptr<Module> M) : M(std::move(M)) {}
+  ModuleDesc() = delete;
+  ModuleDesc(const ModuleDesc &) = delete;
+  ModuleDesc &operator=(const ModuleDesc &) = delete;
+  ModuleDesc(ModuleDesc &&) = default;
+  ModuleDesc &operator=(ModuleDesc &&) = default;
 
-  ModuleDesc(std::unique_ptr<Module> M, EntryPointGroup EntryPoints)
-      : M(std::move(M)), EntryPoints(std::move(EntryPoints)) {}
+  ModuleDesc(std::unique_ptr<Module> M,
+             EntryPointGroup EntryPoints = EntryPointGroup())
+      : M(std::move(M)), EntryPoints(std::move(EntryPoints)) {
+    assert(this->M && "Module should be non-empty");
+  }
 
   const EntryPointSet &entries() const { return EntryPoints.Functions; }
   const EntryPointGroup &getEntryPointGroup() const { return EntryPoints; }
   EntryPointSet &entries() { return EntryPoints.Functions; }
   Module &getModule() { return *M; }
   const Module &getModule() const { return *M; }
-  std::unique_ptr<Module> releaseModulePtr() { return std::move(M); }
 
   // Cleans up module IR - removes dead globals, debug info etc.
   void cleanup() {
-    // Externalize them so they are not dropped by GlobalDCE
-    for (Function &F : *M)
-      if (F.hasFnAttribute("indirectly-callable"))
-        F.setLinkage(GlobalValue::LinkageTypes::ExternalLinkage);
-
     ModuleAnalysisManager MAM;
     MAM.registerPass([&] { return PassInstrumentationAnalysis(); });
     ModulePassManager MPM;
-    // Do cleanup.
     MPM.addPass(GlobalDCEPass());           // Delete unreachable globals.
     MPM.addPass(StripDeadDebugInfoPass());  // Remove dead debug info.
     MPM.addPass(StripDeadPrototypesPass()); // Remove dead func decls.
@@ -130,16 +133,17 @@ public:
   }
 
   std::string makeSymbolTable() const {
-    std::string ST;
-    for (const Function *F : EntryPoints.Functions)
-      ST += (Twine(F->getName()) + "\n").str();
+    SmallString<128> ST;
+    for (const Function *F : EntryPoints.Functions) {
+      ST += F->getName();
+      ST += "\n";
+    }
 
-    return ST;
+    return std::string(ST);
   }
 
   void dump() const {
-    assert(M && "dump of empty ModuleDesc");
-    dbgs() << "split_module::ModuleDesc[" << M->getName() << "] {\n";
+    dbgs() << "ModuleDesc[" << M->getName() << "] {\n";
     EntryPoints.dump();
     dbgs() << "}\n";
   }
@@ -366,14 +370,14 @@ static StringRef computeFunctionCategoryFromStringMetadata(const Function &F,
   return F.getFnAttribute(AttrName).getValueAsString();
 }
 
-static EntryPointGroupVec selectEntryPointGroups(const ModuleDesc &MD,
+static EntryPointGroupVec selectEntryPointGroups(const Module &M,
                                                  IRSplitMode Mode) {
   // std::map is used here to ensure stable ordering of entry point groups,
   // which is based on their contents, this greatly helps LIT tests
   std::map<std::string, EntryPointSet> EntryPointsMap;
 
   static constexpr char ATTR_SYCL_MODULE_ID[] = "sycl-module-id";
-  for (const auto &F : MD.getModule().functions()) {
+  for (const auto &F : M.functions()) {
     if (!isEntryPoint(F))
       continue;
 
@@ -427,12 +431,11 @@ static Error saveModuleIRInFile(Module &M, StringRef FilePath,
 
 static Expected<SYCLSplitModule>
 saveModuleDesc(ModuleDesc &MD, std::string Prefix, bool OutputAssembly) {
-  SYCLSplitModule SM;
   Prefix += OutputAssembly ? ".ll" : ".bc";
-  Error E = saveModuleIRInFile(MD.getModule(), Prefix, OutputAssembly);
-  if (E)
+  if (Error E = saveModuleIRInFile(MD.getModule(), Prefix, OutputAssembly))
     return E;
 
+  SYCLSplitModule SM;
   SM.ModuleFilePath = Prefix;
   SM.Symbols = MD.makeSymbolTable();
   return SM;
@@ -498,9 +501,9 @@ std::optional<IRSplitMode> convertStringToSplitMode(StringRef S) {
 
 Expected<SmallVector<SYCLSplitModule, 0>>
 splitSYCLModule(std::unique_ptr<Module> M, ModuleSplitterSettings Settings) {
-  ModuleDesc MD = std::move(M);
   SmallVector<SYCLSplitModule, 0> OutputImages;
   if (Settings.Mode == IRSplitMode::IRSM_NONE) {
+    ModuleDesc MD = std::move(M);
     std::string OutIRFileName = (Settings.OutputPrefix + Twine("_0")).str();
     auto ImageOrErr =
         saveModuleDesc(MD, OutIRFileName, Settings.OutputAssembly);
@@ -511,7 +514,8 @@ splitSYCLModule(std::unique_ptr<Module> M, ModuleSplitterSettings Settings) {
     return OutputImages;
   }
 
-  EntryPointGroupVec Groups = selectEntryPointGroups(MD, Settings.Mode);
+  EntryPointGroupVec Groups = selectEntryPointGroups(*M, Settings.Mode);
+  ModuleDesc MD = std::move(M);
   if (Groups.size() < 2) {
     // FIXME(maksimsab): this branch is not tested yet.
     std::string OutIRFileName = (Settings.OutputPrefix + Twine("_0")).str();
