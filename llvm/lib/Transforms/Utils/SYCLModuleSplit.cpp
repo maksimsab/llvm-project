@@ -13,34 +13,27 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Bitcode/BitcodeWriterPass.h"
-#include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/PassManagerImpl.h"
 #include "llvm/IRPrinter/IRPrintingPasses.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/LineIterator.h"
 #include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/GlobalDCE.h"
-#include "llvm/Transforms/IPO/Internalize.h"
 #include "llvm/Transforms/IPO/StripDeadPrototypes.h"
 #include "llvm/Transforms/IPO/StripSymbols.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/SYCLUtils.h"
 
-#include <algorithm>
 #include <map>
 #include <utility>
-#include <variant>
 
 using namespace llvm;
 
@@ -96,8 +89,6 @@ struct EntryPointGroup {
 /// Annotates an llvm::Module with information necessary to perform and track
 /// the result of device code (llvm::Module instances) splitting:
 /// - entry points group from the module.
-/// It also provides convenience functions for entry point set transformation
-/// between llvm::Function object and string representations.
 class ModuleDesc {
   std::unique_ptr<Module> M;
   EntryPointGroup EntryPoints;

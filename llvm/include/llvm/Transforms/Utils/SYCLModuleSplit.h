@@ -13,6 +13,7 @@
 #ifndef LLVM_SYCL_MODULE_SPLIT_H
 #define LLVM_SYCL_MODULE_SPLIT_H
 
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
