@@ -203,17 +203,7 @@ public:
         if (!CI || !CI->isIndirectCall()) // Direct calls were handled above
           continue;
 
-        // TODO: consider limiting set of potential callees to functions marked
-        // with special attribute (like [[intel::device_indirectly_callable]])
         const FunctionType *Signature = CI->getFunctionType();
-        // Note: strictly speaking, virtual functions are allowed to use
-        // co-variant return types, i.e. we can actually miss a potential callee
-        // here, because it has different signature (different return type).
-        // However, this is not a problem for two reasons:
-        // - opaque pointers will be enabled at some point and will make
-        //   signatures the same in that case
-        // - all virtual functions are referenced from vtable and therefore will
-        //   anyway be preserved in a module
         const auto &PotentialCallees = FuncTypeToFuncsMap[Signature];
         Graph[&F].insert(PotentialCallees.begin(), PotentialCallees.end());
       }
@@ -516,18 +506,6 @@ splitSYCLModule(std::unique_ptr<Module> M, ModuleSplitterSettings Settings) {
 
   EntryPointGroupVec Groups = selectEntryPointGroups(*M, Settings.Mode);
   ModuleDesc MD = std::move(M);
-  if (Groups.size() < 2) {
-    // FIXME(maksimsab): this branch is not tested yet.
-    std::string OutIRFileName = (Settings.OutputPrefix + Twine("_0")).str();
-    auto ImageOrErr =
-        saveModuleDesc(MD, OutIRFileName, Settings.OutputAssembly);
-    if (!ImageOrErr)
-      return ImageOrErr.takeError();
-
-    OutputImages.emplace_back(std::move(*ImageOrErr));
-    return OutputImages;
-  }
-
   ModuleSplitter Splitter(std::move(MD), std::move(Groups));
   size_t ID = 0;
   while (Splitter.hasMoreSplits()) {
