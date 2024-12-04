@@ -4,7 +4,7 @@
 ; RUN: llvm-split -sycl-split=kernel -S < %s -o %t
 ; RUN: FileCheck %s -input-file=%t_0.ll --check-prefix CHECK0 \
 ; RUN:     --implicit-check-not @foo --implicit-check-not @kernel_A \
-; RUN:     --implicit-check-not @kernel_B --implicit-check-not @baz
+; RUN:     --implicit-check-not @kernel_B
 ; RUN: FileCheck %s -input-file=%t_1.ll --check-prefix CHECK1 \
 ; RUN:     --implicit-check-not @kernel_A --implicit-check-not @kernel_C
 ; RUN: FileCheck %s -input-file=%t_2.ll --check-prefix CHECK2 \
@@ -14,11 +14,13 @@
 
 ; CHECK0-DAG: define spir_kernel void @kernel_C
 ; CHECK0-DAG: define spir_func i32 @bar
+; CHECK0-DAG: define spir_func void @baz
 ; CHECK0-DAG: define spir_func void @BAZ
 
 ; CHECK1-DAG: define spir_kernel void @kernel_B
 ; CHECK1-DAG: define {{.*}}spir_func i32 @foo
 ; CHECK1-DAG: define spir_func i32 @bar
+; CHECK1-DAG: define spir_func void @baz
 ; CHECK1-DAG: define spir_func void @BAZ
 
 ; CHECK2-DAG: define spir_kernel void @kernel_A
@@ -32,7 +34,7 @@ define spir_func i32 @foo(i32 (i32, void ()*)* %ptr1, void ()* %ptr2) {
   ret i32 %1
 }
 
-define spir_func i32 @bar(i32 %arg, void ()* %ptr) #3 {
+define spir_func i32 @bar(i32 %arg, void ()* %ptr) {
   call spir_func void %ptr()
   ret i32 %arg
 }
@@ -41,7 +43,7 @@ define spir_func void @baz() {
   ret void
 }
 
-define spir_func void @BAZ() #3 {
+define spir_func void @BAZ() {
   ret void
 }
 
@@ -63,4 +65,3 @@ define spir_kernel void @kernel_C() #2 {
 attributes #0 = { "sycl-module-id"="TU1.cpp" }
 attributes #1 = { "sycl-module-id"="TU2.cpp" }
 attributes #2 = { "sycl-module-id"="TU3.cpp" }
-attributes #3 = { "referenced-indirectly" }
