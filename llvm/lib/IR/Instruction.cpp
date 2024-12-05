@@ -441,6 +441,10 @@ void Instruction::dropPoisonGeneratingFlags() {
     cast<TruncInst>(this)->setHasNoUnsignedWrap(false);
     cast<TruncInst>(this)->setHasNoSignedWrap(false);
     break;
+
+  case Instruction::ICmp:
+    cast<ICmpInst>(this)->setSameSign(false);
+    break;
   }
 
   if (isa<FPMathOperator>(this)) {
@@ -654,6 +658,10 @@ void Instruction::copyIRFlags(const Value *V, bool IncludeWrapFlags) {
   if (auto *NNI = dyn_cast<PossiblyNonNegInst>(V))
     if (isa<PossiblyNonNegInst>(this))
       setNonNeg(NNI->hasNonNeg());
+
+  if (auto *SrcICmp = dyn_cast<ICmpInst>(V))
+    if (auto *DestICmp = dyn_cast<ICmpInst>(this))
+      DestICmp->setSameSign(SrcICmp->hasSameSign());
 }
 
 void Instruction::andIRFlags(const Value *V) {
@@ -695,6 +703,10 @@ void Instruction::andIRFlags(const Value *V) {
   if (auto *NNI = dyn_cast<PossiblyNonNegInst>(V))
     if (isa<PossiblyNonNegInst>(this))
       setNonNeg(hasNonNeg() && NNI->hasNonNeg());
+
+  if (auto *SrcICmp = dyn_cast<ICmpInst>(V))
+    if (auto *DestICmp = dyn_cast<ICmpInst>(this))
+      DestICmp->setSameSign(DestICmp->hasSameSign() && SrcICmp->hasSameSign());
 }
 
 const char *Instruction::getOpcodeName(unsigned OpCode) {
@@ -875,7 +887,8 @@ bool Instruction::isIdenticalToWhenDefined(const Instruction *I,
 
   // If both instructions have no operands, they are identical.
   if (getNumOperands() == 0 && I->getNumOperands() == 0)
-    return this->hasSameSpecialState(I);
+    return this->hasSameSpecialState(I, /*IgnoreAlignment=*/false,
+                                     IntersectAttrs);
 
   // We have two instructions of identical opcode and #operands.  Check to see
   // if all operands are the same.

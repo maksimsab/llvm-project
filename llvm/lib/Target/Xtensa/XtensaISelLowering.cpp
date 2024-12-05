@@ -13,6 +13,7 @@
 
 #include "XtensaISelLowering.h"
 #include "XtensaConstantPoolValue.h"
+#include "XtensaInstrInfo.h"
 #include "XtensaSubtarget.h"
 #include "XtensaTargetMachine.h"
 #include "llvm/CodeGen/CallingConvLower.h"
@@ -844,7 +845,7 @@ SDValue XtensaTargetLowering::LowerDYNAMIC_STACKALLOC(SDValue Op,
   SDValue SizeTmp =
       DAG.getNode(ISD::ADD, DL, VT, Size, DAG.getConstant(31, DL, MVT::i32));
   SDValue SizeRoundUp = DAG.getNode(ISD::AND, DL, VT, SizeTmp,
-                                    DAG.getConstant(~31, DL, MVT::i32));
+                                    DAG.getSignedConstant(~31, DL, MVT::i32));
 
   unsigned SPReg = Xtensa::SP;
   SDValue SP = DAG.getCopyFromReg(Chain, DL, SPReg, VT);
@@ -872,7 +873,7 @@ SDValue XtensaTargetLowering::LowerShiftLeftParts(SDValue Op,
   //   Lo = 0
   //   Hi = Lo << (Shamt - register size)
 
-  SDValue MinusRegisterSize = DAG.getConstant(-32, DL, VT);
+  SDValue MinusRegisterSize = DAG.getSignedConstant(-32, DL, VT);
   SDValue ShamtMinusRegisterSize =
       DAG.getNode(ISD::ADD, DL, VT, Shamt, MinusRegisterSize);
 
@@ -913,7 +914,7 @@ SDValue XtensaTargetLowering::LowerShiftRightParts(SDValue Op,
   //     Hi = 0;
 
   unsigned ShiftRightOp = IsSRA ? ISD::SRA : ISD::SRL;
-  SDValue MinusRegisterSize = DAG.getConstant(-32, DL, VT);
+  SDValue MinusRegisterSize = DAG.getSignedConstant(-32, DL, VT);
   SDValue RegisterSizeMinus1 = DAG.getConstant(32 - 1, DL, VT);
   SDValue ShamtMinusRegisterSize =
       DAG.getNode(ISD::ADD, DL, VT, Shamt, MinusRegisterSize);
@@ -1104,10 +1105,26 @@ XtensaTargetLowering::emitSelectCC(MachineInstr &MI,
 MachineBasicBlock *XtensaTargetLowering::EmitInstrWithCustomInserter(
     MachineInstr &MI, MachineBasicBlock *MBB) const {
   DebugLoc DL = MI.getDebugLoc();
+  const XtensaInstrInfo &TII = *Subtarget.getInstrInfo();
 
   switch (MI.getOpcode()) {
   case Xtensa::SELECT:
     return emitSelectCC(MI, MBB);
+  case Xtensa::S8I:
+  case Xtensa::S16I:
+  case Xtensa::S32I:
+  case Xtensa::L8UI:
+  case Xtensa::L16SI:
+  case Xtensa::L16UI:
+  case Xtensa::L32I: {
+    // Insert memory wait instruction "memw" before volatile load/store as it is
+    // implemented in gcc. If memoperands is empty then assume that it aslo
+    // maybe volatile load/store and insert "memw".
+    if (MI.memoperands_empty() || (*MI.memoperands_begin())->isVolatile()) {
+      BuildMI(*MBB, MI, DL, TII.get(Xtensa::MEMW));
+    }
+    return MBB;
+  }
   default:
     llvm_unreachable("Unexpected instr type to insert");
   }

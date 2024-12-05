@@ -11,6 +11,7 @@
 #define _LIBCPP___MEMORY_COMPRESSED_PAIR_H
 
 #include <__config>
+#include <__cstddef/size_t.h>
 #include <__type_traits/datasizeof.h>
 #include <__type_traits/is_empty.h>
 #include <__type_traits/is_final.h>
@@ -56,7 +57,7 @@ template <class _ToPad,
           bool _Empty = ((is_empty<_ToPad>::value && !__libcpp_is_final<_ToPad>::value) ||
                          is_reference<_ToPad>::value || sizeof(_ToPad) == __datasizeof_v<_ToPad>)>
 class __compressed_pair_padding {
-  char __padding_[sizeof(_ToPad) - __datasizeof_v<_ToPad>];
+  char __padding_[sizeof(_ToPad) - __datasizeof_v<_ToPad>] = {};
 };
 
 template <class _ToPad>

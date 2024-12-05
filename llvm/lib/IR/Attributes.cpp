@@ -772,11 +772,11 @@ bool Attribute::canUseAsRetAttr(AttrKind Kind) {
 
 static bool hasIntersectProperty(Attribute::AttrKind Kind,
                                  AttributeProperty Prop) {
-  assert(Prop == AttributeProperty::IntersectPreserve ||
-         Prop == AttributeProperty::IntersectAnd ||
-         Prop == AttributeProperty::IntersectMin ||
-         Prop == AttributeProperty::IntersectCustom &&
-             "Unknown intersect property");
+  assert((Prop == AttributeProperty::IntersectPreserve ||
+          Prop == AttributeProperty::IntersectAnd ||
+          Prop == AttributeProperty::IntersectMin ||
+          Prop == AttributeProperty::IntersectCustom) &&
+         "Unknown intersect property");
   return (getAttributeProperties(Kind) &
           AttributeProperty::IntersectPropertyMask) == Prop;
 }
@@ -1800,12 +1800,10 @@ AttributeList::intersectWith(LLVMContext &C, AttributeList Other) const {
   if (*this == Other)
     return *this;
 
-  // At least for now, only intersect lists with same number of params.
-  if (getNumAttrSets() != Other.getNumAttrSets())
-    return std::nullopt;
-
   SmallVector<std::pair<unsigned, AttributeSet>> IntersectedAttrs;
-  for (unsigned Idx : indexes()) {
+  auto IndexIt =
+      index_iterator(std::max(getNumAttrSets(), Other.getNumAttrSets()));
+  for (unsigned Idx : IndexIt) {
     auto IntersectedAS =
         getAttributes(Idx).intersectWith(C, Other.getAttributes(Idx));
     // If any index fails to intersect, fail.
@@ -1931,6 +1929,14 @@ uint64_t AttributeList::getRetDereferenceableOrNullBytes() const {
 uint64_t
 AttributeList::getParamDereferenceableOrNullBytes(unsigned Index) const {
   return getParamAttrs(Index).getDereferenceableOrNullBytes();
+}
+
+std::optional<ConstantRange>
+AttributeList::getParamRange(unsigned ArgNo) const {
+  auto RangeAttr = getParamAttrs(ArgNo).getAttribute(Attribute::Range);
+  if (RangeAttr.isValid())
+    return RangeAttr.getRange();
+  return std::nullopt;
 }
 
 FPClassTest AttributeList::getRetNoFPClass() const {
@@ -2279,6 +2285,13 @@ Attribute AttrBuilder::getAttribute(StringRef A) const {
   return {};
 }
 
+std::optional<ConstantRange> AttrBuilder::getRange() const {
+  const Attribute RangeAttr = getAttribute(Attribute::Range);
+  if (RangeAttr.isValid())
+    return RangeAttr.getRange();
+  return std::nullopt;
+}
+
 bool AttrBuilder::contains(Attribute::AttrKind A) const {
   return getAttribute(A).isValid();
 }
@@ -2302,7 +2315,7 @@ bool AttributeFuncs::isNoFPClassCompatibleType(Type *Ty) {
 }
 
 /// Which attributes cannot be applied to a type.
-AttributeMask AttributeFuncs::typeIncompatible(Type *Ty,
+AttributeMask AttributeFuncs::typeIncompatible(Type *Ty, AttributeSet AS,
                                                AttributeSafetyKind ASK) {
   AttributeMask Incompatible;
 
@@ -2317,6 +2330,11 @@ AttributeMask AttributeFuncs::typeIncompatible(Type *Ty,
   if (!Ty->isIntOrIntVectorTy()) {
     // Attributes that only apply to integers or vector of integers.
     if (ASK & ASK_SAFE_TO_DROP)
+      Incompatible.addAttribute(Attribute::Range);
+  } else {
+    Attribute RangeAttr = AS.getAttribute(Attribute::Range);
+    if (RangeAttr.isValid() &&
+        RangeAttr.getRange().getBitWidth() != Ty->getScalarSizeInBits())
       Incompatible.addAttribute(Attribute::Range);
   }
 

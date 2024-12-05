@@ -1294,8 +1294,8 @@ bool BinaryContext::handleAArch64Veneer(uint64_t Address, bool MatchOnly) {
     Veneer->getOrCreateLocalLabel(Address);
     Veneer->setMaxSize(TotalSize);
     Veneer->updateState(BinaryFunction::State::Disassembled);
-    LLVM_DEBUG(dbgs() << "BOLT-DEBUG: handling veneer function at 0x" << Address
-                      << "\n");
+    LLVM_DEBUG(dbgs() << "BOLT-DEBUG: handling veneer function at 0x"
+                      << Twine::utohexstr(Address) << "\n");
     return true;
   };
 
@@ -1607,13 +1607,7 @@ std::vector<BinaryFunction *> BinaryContext::getSortedFunctions() {
                   SortedFunctions.begin(),
                   [](BinaryFunction &BF) { return &BF; });
 
-  llvm::stable_sort(SortedFunctions,
-                    [](const BinaryFunction *A, const BinaryFunction *B) {
-                      if (A->hasValidIndex() && B->hasValidIndex()) {
-                        return A->getIndex() < B->getIndex();
-                      }
-                      return A->hasValidIndex();
-                    });
+  llvm::stable_sort(SortedFunctions, compareBinaryFunctionByIndex);
   return SortedFunctions;
 }
 

@@ -2009,12 +2009,23 @@ void AsmPrinter::Impl::printLocationInternal(LocationAttr loc, bool pretty,
         else
           os << "unknown";
       })
-      .Case<FileLineColLoc>([&](FileLineColLoc loc) {
+      .Case<FileLineColRange>([&](FileLineColRange loc) {
         if (pretty)
           os << loc.getFilename().getValue();
         else
           printEscapedString(loc.getFilename());
-        os << ':' << loc.getLine() << ':' << loc.getColumn();
+        if (loc.getEndColumn() == loc.getStartColumn() &&
+            loc.getStartLine() == loc.getEndLine()) {
+          os << ':' << loc.getStartLine() << ':' << loc.getStartColumn();
+          return;
+        }
+        if (loc.getStartLine() == loc.getEndLine()) {
+          os << ':' << loc.getStartLine() << ':' << loc.getStartColumn()
+             << " to :" << loc.getEndColumn();
+          return;
+        }
+        os << ':' << loc.getStartLine() << ':' << loc.getStartColumn() << " to "
+           << loc.getEndLine() << ':' << loc.getEndColumn();
       })
       .Case<NameLoc>([&](NameLoc loc) {
         printEscapedString(loc.getName());
@@ -2064,6 +2075,11 @@ void AsmPrinter::Impl::printLocationInternal(LocationAttr loc, bool pretty,
             [&](Location loc) { printLocationInternal(loc, pretty); },
             [&]() { os << ", "; });
         os << ']';
+      })
+      .Default([&](LocationAttr loc) {
+        // Assumes that this is a dialect-specific attribute and prints it
+        // directly.
+        printAttribute(loc);
       });
 }
 
@@ -2588,6 +2604,7 @@ void AsmPrinter::Impl::printTypeImpl(Type type) {
       .Case<Float8E4M3FNUZType>([&](Type) { os << "f8E4M3FNUZ"; })
       .Case<Float8E4M3B11FNUZType>([&](Type) { os << "f8E4M3B11FNUZ"; })
       .Case<Float8E3M4Type>([&](Type) { os << "f8E3M4"; })
+      .Case<Float8E8M0FNUType>([&](Type) { os << "f8E8M0FNU"; })
       .Case<BFloat16Type>([&](Type) { os << "bf16"; })
       .Case<Float16Type>([&](Type) { os << "f16"; })
       .Case<FloatTF32Type>([&](Type) { os << "tf32"; })
