@@ -10,17 +10,90 @@
 #ifndef LLVM_TRANSFORMS_UTILS_SYCLUTILS_H
 #define LLVM_TRANSFORMS_UTILS_SYCLUTILS_H
 
-#include <llvm/ADT/SmallString.h>
-#include <llvm/ADT/SmallVector.h>
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/Twine.h"
+
+#include <string>
 
 namespace llvm {
 
+class Module;
+class Function;
 class raw_ostream;
 
-using SYCLStringTable = SmallVector<SmallVector<SmallString<64>>>;
+namespace sycl {
 
-void writeSYCLStringTable(const SYCLStringTable &Table, raw_ostream &OS);
+enum class IRSplitMode {
+  IRSM_PER_TU,     // one module per translation unit
+  IRSM_PER_KERNEL, // one module per kernel
+  IRSM_NONE        // no splitting
+};
 
+/// \returns IRSplitMode value if \p S is recognized. Otherwise, std::nullopt is
+/// returned.
+std::optional<IRSplitMode> convertStringToSplitMode(StringRef S);
+
+/// TODO: add doc
+class FunctionCategorizer {
+public:
+  FunctionCategorizer(IRSplitMode SM);
+
+  FunctionCategorizer() = delete;
+  FunctionCategorizer(FunctionCategorizer &) = delete;
+  FunctionCategorizer &operator=(const FunctionCategorizer &) = delete;
+  FunctionCategorizer(FunctionCategorizer &&) = default;
+  FunctionCategorizer &operator=(FunctionCategorizer &&) = default;
+
+  std::optional<int> operator()(const Function &F);
+
+private:
+  struct KeyInfo {
+    static SmallString<0> getEmptyKey() { return SmallString<0>(""); }
+
+    static SmallString<0> getTombstoneKey() { return SmallString<0>("-"); }
+
+    static bool isEqual(const SmallString<0> &LHS, const SmallString<0> &RHS) {
+      return LHS == RHS;
+    }
+
+    static unsigned getHashValue(const SmallString<0> &S) {
+      return llvm::hash_value(StringRef(S));
+    }
+  };
+
+  IRSplitMode SM;
+  DenseMap<SmallString<0>, int, KeyInfo> StrKeyToID;
+};
+
+/// The structure represents a LLVM Module accompanied by additional
+/// information. Split Modules are being stored at disk due to the high RAM
+/// consumption during the whole splitting process.
+struct ModuleAndSYCLMetadata {
+  std::string ModuleFilePath;
+  std::string Symbols;
+
+  ModuleAndSYCLMetadata() = delete;
+  ModuleAndSYCLMetadata(const ModuleAndSYCLMetadata &) = default;
+  ModuleAndSYCLMetadata &operator=(const ModuleAndSYCLMetadata &) = default;
+  ModuleAndSYCLMetadata(ModuleAndSYCLMetadata &&) = default;
+  ModuleAndSYCLMetadata &operator=(ModuleAndSYCLMetadata &&) = default;
+
+  ModuleAndSYCLMetadata(const Twine &File, std::string Symbols)
+      : ModuleFilePath(File.str()), Symbols(std::move(Symbols)) {}
+};
+
+/// TODO: add desc
+std::string makeSymbolTable(const Module &M);
+
+using StringTable = SmallVector<SmallVector<SmallString<64>>>;
+
+void writeStringTable(const StringTable &Table, raw_ostream &OS);
+
+} // namespace sycl
 } // namespace llvm
 
 #endif // LLVM_TRANSFORMS_UTILS_SYCLUTILS_H
