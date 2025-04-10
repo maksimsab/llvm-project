@@ -22,6 +22,7 @@
 #include "llvm/CodeGen/CommandFlags.h"
 #include "llvm/Frontend/Offloading/OffloadWrapper.h"
 #include "llvm/Frontend/Offloading/Utility.h"
+#include "llvm/Frontend/SYCL/OffloadWrapper.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/Module.h"
@@ -683,6 +684,7 @@ Expected<StringRef> compileModule(Module &M, OffloadKind Kind) {
 /// registration code from the device images stored in \p Images.
 Expected<StringRef>
 wrapDeviceImages(ArrayRef<std::unique_ptr<MemoryBuffer>> Buffers,
+                 ArrayRef<OffloadBinary::OffloadingImage> Images,
                  const ArgList &Args, OffloadKind Kind) {
   llvm::TimeTraceScope TimeScope("Wrap bundled images");
 
@@ -714,6 +716,13 @@ wrapDeviceImages(ArrayRef<std::unique_ptr<MemoryBuffer>> Buffers,
             M, BuffersToWrap.front(), offloading::getOffloadEntryArray(M)))
       return std::move(Err);
     break;
+  case OFK_SYCL: {
+    offloading::sycl::SYCLWrappingOptions WrappingOptions;
+    if (Error Err =
+            offloading::sycl::wrapSYCLImages(M, Images, WrappingOptions))
+      return Err;
+    break;
+  }
   default:
     return createStringError(getOffloadKindName(Kind) +
                              " wrapping is not supported");
@@ -803,9 +812,11 @@ Expected<SmallVector<std::unique_ptr<MemoryBuffer>>>
 bundleLinkedOutput(ArrayRef<OffloadingImage> Images, const ArgList &Args,
                    OffloadKind Kind) {
   llvm::TimeTraceScope TimeScope("Bundle linked output");
+  SmallVector<std::unique_ptr<MemoryBuffer>> EmptyRes;
   switch (Kind) {
-  case OFK_OpenMP:
   case OFK_SYCL:
+    return EmptyRes;
+  case OFK_OpenMP:
     return bundleOpenMP(Images);
   case OFK_Cuda:
     return bundleCuda(Images, Args);
@@ -1014,7 +1025,7 @@ Expected<SmallVector<StringRef>> linkAndWrapDeviceFiles(
     auto BundledImagesOrErr = bundleLinkedOutput(Input, Args, Kind);
     if (!BundledImagesOrErr)
       return BundledImagesOrErr.takeError();
-    auto OutputOrErr = wrapDeviceImages(*BundledImagesOrErr, Args, Kind);
+    auto OutputOrErr = wrapDeviceImages(*BundledImagesOrErr, Input, Args, Kind);
     if (!OutputOrErr)
       return OutputOrErr.takeError();
     WrappedOutput.push_back(*OutputOrErr);
