@@ -5,20 +5,11 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// This is a part of wrapping functionality related to SYCL part.
-// All implementation details were inspired by previous implementation in
-// clang-offload-wrapper tool.
-// OffloadWrapper accepts device images, corresponding entries, properties,
-// and additional optional options. Then it wraps this into a LLVM IR
-// Module accordingly to the expected format listed in
-//  sycl/include/sycl/detail/pi.h
-//===----------------------------------------------------------------------===//
 
 #include "llvm/Frontend/SYCL/OffloadWrapper.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Frontend/Offloading/Utility.h"
 #include "llvm/IR/Constants.h"
@@ -28,7 +19,6 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
-// #include "llvm/SYCLLowerIR/SYCLUtils.h"
 #include "llvm/Object/OffloadBinary.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -48,29 +38,7 @@ using OffloadingImage = OffloadBinary::OffloadingImage;
 
 namespace {
 
-/// Note: Returned values are a part of ABI. If you want to change them
-/// then coordinate it with SYCL Runtime.
-// FIXME: this values should be coordinated with SYCL Runtime.
-// int8_t binaryImageFormatToInt8(SYCLImageFormat Format) {
-//   switch (Format) {
-//   case SYCLImageFormat::BIF_None:
-//     return 0;
-//   case SYCLImageFormat::BIF_Native:
-//     return 1;
-//   case SYCLImageFormat::BIF_SPIRV:
-//     return 2;
-//   case SYCLImageFormat::BIF_LLVMBC:
-//     return 3;
-//   default:
-//     llvm_unreachable("unexpected SYCLImageFormat");
-//   }
-// }
-
 /// Wrapper helper class that creates all LLVM IRs wrapping given images.
-/// Note: All created structures, "_pi_device_*", "__sycl_*" and "__tgt*" names
-/// in this implementation are aligned with "sycl/include/sycl/detail/pi.h".
-/// If you want to change anything then you MUST coordinate changes with SYCL
-/// Runtime ABI.
 struct Wrapper {
   Module &M;
   LLVMContext &C;
@@ -119,7 +87,7 @@ struct Wrapper {
   ///   uint8_t Format;
   ///   // null-terminated string representation of the device's target
   ///   // architecture
-  ///   const char *DeviceTargetSpec;
+  ///   const char *Arch;
   ///   // a null-terminated string; target- and compiler-specific options
   ///   // which are suggested to use to "compile" program at runtime
   ///   const char *CompileOptions;
@@ -143,7 +111,7 @@ struct Wrapper {
             Type::getInt16Ty(C),       // Version
             Type::getInt8Ty(C),        // OffloadKind
             Type::getInt8Ty(C),        // Format
-            PointerType::getUnqual(C), // DeviceTargetSpec
+            PointerType::getUnqual(C), // Arch
             PointerType::getUnqual(C), // CompileOptions
             PointerType::getUnqual(C), // LinkOptions
             PointerType::getUnqual(C), // ImageStart
@@ -344,8 +312,8 @@ struct Wrapper {
     appendToUsed(M, ImgInfoVar);
   }
 
-  Constant *wrapOffloadBinary(const OffloadingImage &OI, const Twine &ImageID,
-                              StringRef OffloadKindTag) {
+  Constant *wrapImage(const OffloadingImage &OI, const Twine &ImageID,
+                      StringRef OffloadKindTag) {
     // DeviceImageStructVersion change log:
     // -- version 2: updated to PI 1.2 binary image format
     // -- version 3: Manifests are removed.
@@ -431,43 +399,43 @@ struct Wrapper {
   /// ...
   ///
   /// __attribute__((visibility("hidden")))
-  /// extern const char *CompileOptions0 = "...";
+  /// extern const char *CompileOptions = "...";
   /// ...
   /// __attribute__((visibility("hidden")))
-  /// extern const char *LinkOptions0 = "...";
+  /// extern const char *LinkOptions = "...";
   /// ...
   ///
-  /// static const char Image0[] = { <Bufs.front() contents> };
+  /// static const char Image0[] = { ... };
   ///  ...
-  /// static const char ImageN[] = { <Bufs.back() contents> };
+  /// static const char ImageN[] = { ... };
   ///
   /// static constexpr uint16_t Version = 3;
   /// static constexpr uint16_t OffloadKind = 4; // SYCL
   ///
   /// static const __sycl.tgt_device_image Images[] = {
   ///   {
-  ///     Version,                      /*Version*/
-  ///     OffloadKind,                  // Kind of offload model.
+  ///     Version,                      // Version
+  ///     OffloadKind,                  // OffloadKind
   ///     Format,                       // format of the image - SPIRV, LLVMIR
   ///                                   // bc, etc
-  //      NULL,                         /*DeviceTargetSpec*/
-  ///     CompileOptions0,              /*CompileOptions0*/
-  ///     LinkOptions0,                 /*LinkOptions0*/
-  ///     Image0,                       /*ImageStart*/
-  ///     Image0 + sizeof(Image0),      /*ImageEnd*/
-  ///     __start_offloading_entries0,  /*EntriesBegin*/
-  ///     __stop_offloading_entries0,   /*EntriesEnd*/
-  ///     Properties,                   /*Properties*/
+  //      NULL,                         // Arch
+  ///     CompileOptions0,              // CompileOptions
+  ///     LinkOptions0,                 // LinkOptions
+  ///     Image0,                       // ImageStart
+  ///     Image0 + N,                   // ImageEnd
+  ///     __start_offloading_entries0,  // EntriesBegin
+  ///     __stop_offloading_entries0,   // EntriesEnd
+  ///     Properties,                   // Properties
   ///   },
   ///   ...
   /// };
   ///
   /// static const __sycl.tgt_bin_desc FatbinDesc = {
-  ///   Version,                             /*Version*/
-  ///   sizeof(Images) / sizeof(Images[0]),  /*NumDeviceImages*/
-  ///   Images,                              /*DeviceImages*/
-  ///   __start_offloading_entries,          /*HostEntriesBegin*/
-  ///   __stop_offloading_entries            /*HostEntriesEnd*/
+  ///   Version,                             //Version
+  ///   sizeof(Images) / sizeof(Images[0]),  //NumDeviceImages
+  ///   Images,                              //DeviceImages
+  ///   __start_offloading_entries,          //HostEntriesBegin
+  ///   __stop_offloading_entries            //HostEntriesEnd
   /// };
   /// \endcode
   ///
@@ -477,8 +445,7 @@ struct Wrapper {
     SmallVector<Constant *> WrappedImages;
     WrappedImages.reserve(Images.size());
     for (size_t I = 0, E = Images.size(); I != E; ++I)
-      WrappedImages.push_back(
-          wrapOffloadBinary(Images[I], Twine(I), OffloadKindTag));
+      WrappedImages.push_back(wrapImage(Images[I], Twine(I), OffloadKindTag));
 
     return combineWrappedImages(WrappedImages, OffloadKindTag);
   }

@@ -684,8 +684,8 @@ Expected<StringRef> compileModule(Module &M, OffloadKind Kind) {
 /// registration code from the device images stored in \p Images.
 Expected<StringRef>
 wrapDeviceImages(ArrayRef<std::unique_ptr<MemoryBuffer>> Buffers,
-                 ArrayRef<OffloadBinary::OffloadingImage> Images,
-                 const ArgList &Args, OffloadKind Kind) {
+                 ArrayRef<OffloadingImage> Images, const ArgList &Args,
+                 OffloadKind Kind) {
   llvm::TimeTraceScope TimeScope("Wrap bundled images");
 
   SmallVector<ArrayRef<char>, 4> BuffersToWrap;
