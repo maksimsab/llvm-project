@@ -8,6 +8,7 @@ add_llvm_component_library(LLVMFrontendSYCL
   LINK_COMPONENTS
   Core
   FrontendOffloading
+  Object
   Support
   TransformUtils
   )

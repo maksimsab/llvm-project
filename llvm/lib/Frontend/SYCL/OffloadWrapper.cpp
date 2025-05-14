@@ -23,6 +23,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LineIterator.h"
+#include "llvm/Support/MemoryBufferRef.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #include <memory>
@@ -497,10 +498,24 @@ struct Wrapper {
 
 } // anonymous namespace
 
-Error llvm::offloading::sycl::wrapSYCLImages(
-    llvm::Module &M, ArrayRef<OffloadBinary::OffloadingImage> Images,
-    SYCLWrappingOptions Options) {
+Error llvm::offloading::sycl::wrapSYCLBinaries(llvm::Module &M,
+                                               ArrayRef<ArrayRef<char>> Buffers,
+                                               SYCLWrappingOptions Options) {
   Wrapper W(M, Options);
+  SmallVector<std::unique_ptr<OffloadBinary>> OffloadBinaries;
+  OffloadBinaries.reserve(Buffers.size());
+  SmallVector<OffloadingImage> Images;
+  Images.reserve(Buffers.size());
+  for (auto Buf : Buffers) {
+    MemoryBufferRef MBR(StringRef(Buf.begin(), Buf.size()), /*Identifier*/ "");
+    auto OffloadBinaryOrErr = OffloadBinary::create(MBR);
+    if (!OffloadBinaryOrErr)
+      return OffloadBinaryOrErr.takeError();
+
+    OffloadBinaries.emplace_back(std::move(*OffloadBinaryOrErr));
+    Images.emplace_back(OffloadBinaries.back()->getOffloadingImage());
+  }
+
   GlobalVariable *Desc = W.createFatbinDesc(Images);
   if (!Desc)
     return createStringError(inconvertibleErrorCode(),

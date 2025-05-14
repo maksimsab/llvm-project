@@ -30,13 +30,12 @@ struct SYCLWrappingOptions {
   std::string LinkOptions;
 };
 
-/// Wraps the given \p Images into the module \p M
+/// Wraps OffloadBinaries in the given \p Buffers into the module \p M
 /// as global symbols and registers the images with the SYCL Runtime.
 /// \param Options Settings that allows to turn on optional data and settings.
 llvm::Error
-wrapSYCLImages(llvm::Module &M,
-               ArrayRef<llvm::object::OffloadBinary::OffloadingImage> Images,
-               SYCLWrappingOptions Options = SYCLWrappingOptions());
+wrapSYCLBinaries(llvm::Module &M, llvm::ArrayRef<llvm::ArrayRef<char>> Buffers,
+                 SYCLWrappingOptions Options = SYCLWrappingOptions());
 
 } // namespace sycl
 } // namespace offloading

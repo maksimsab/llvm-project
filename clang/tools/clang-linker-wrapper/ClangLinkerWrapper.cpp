@@ -718,8 +718,8 @@ wrapDeviceImages(ArrayRef<std::unique_ptr<MemoryBuffer>> Buffers,
     break;
   case OFK_SYCL: {
     offloading::sycl::SYCLWrappingOptions WrappingOptions;
-    if (Error Err =
-            offloading::sycl::wrapSYCLImages(M, Images, WrappingOptions))
+    if (Error Err = offloading::sycl::wrapSYCLBinaries(M, BuffersToWrap,
+                                                       WrappingOptions))
       return Err;
     break;
   }
@@ -751,7 +751,7 @@ wrapDeviceImages(ArrayRef<std::unique_ptr<MemoryBuffer>> Buffers,
 }
 
 Expected<SmallVector<std::unique_ptr<MemoryBuffer>>>
-bundleOpenMP(ArrayRef<OffloadingImage> Images) {
+bundleOpenMPAndSYCL(ArrayRef<OffloadingImage> Images) {
   SmallVector<std::unique_ptr<MemoryBuffer>> Buffers;
   for (const OffloadingImage &Image : Images)
     Buffers.emplace_back(
@@ -812,12 +812,10 @@ Expected<SmallVector<std::unique_ptr<MemoryBuffer>>>
 bundleLinkedOutput(ArrayRef<OffloadingImage> Images, const ArgList &Args,
                    OffloadKind Kind) {
   llvm::TimeTraceScope TimeScope("Bundle linked output");
-  SmallVector<std::unique_ptr<MemoryBuffer>> EmptyRes;
   switch (Kind) {
   case OFK_SYCL:
-    return EmptyRes;
   case OFK_OpenMP:
-    return bundleOpenMP(Images);
+    return bundleOpenMPAndSYCL(Images);
   case OFK_Cuda:
     return bundleCuda(Images, Args);
   case OFK_HIP:
