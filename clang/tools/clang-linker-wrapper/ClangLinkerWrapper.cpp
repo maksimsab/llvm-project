@@ -22,6 +22,7 @@
 #include "llvm/CodeGen/CommandFlags.h"
 #include "llvm/Frontend/Offloading/OffloadWrapper.h"
 #include "llvm/Frontend/Offloading/Utility.h"
+#include "llvm/Frontend/SYCL/OffloadWrapper.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/Module.h"
@@ -683,7 +684,8 @@ Expected<StringRef> compileModule(Module &M, OffloadKind Kind) {
 /// registration code from the device images stored in \p Images.
 Expected<StringRef>
 wrapDeviceImages(ArrayRef<std::unique_ptr<MemoryBuffer>> Buffers,
-                 const ArgList &Args, OffloadKind Kind) {
+                 ArrayRef<OffloadingImage> Images, const ArgList &Args,
+                 OffloadKind Kind) {
   llvm::TimeTraceScope TimeScope("Wrap bundled images");
 
   SmallVector<ArrayRef<char>, 4> BuffersToWrap;
@@ -714,6 +716,13 @@ wrapDeviceImages(ArrayRef<std::unique_ptr<MemoryBuffer>> Buffers,
             M, BuffersToWrap.front(), offloading::getOffloadEntryArray(M)))
       return std::move(Err);
     break;
+  case OFK_SYCL: {
+    offloading::sycl::SYCLWrappingOptions WrappingOptions;
+    if (Error Err = offloading::sycl::wrapSYCLBinaries(M, BuffersToWrap,
+                                                       WrappingOptions))
+      return Err;
+    break;
+  }
   default:
     return createStringError(getOffloadKindName(Kind) +
                              " wrapping is not supported");
@@ -742,7 +751,7 @@ wrapDeviceImages(ArrayRef<std::unique_ptr<MemoryBuffer>> Buffers,
 }
 
 Expected<SmallVector<std::unique_ptr<MemoryBuffer>>>
-bundleOpenMP(ArrayRef<OffloadingImage> Images) {
+bundleOpenMPAndSYCL(ArrayRef<OffloadingImage> Images) {
   SmallVector<std::unique_ptr<MemoryBuffer>> Buffers;
   for (const OffloadingImage &Image : Images)
     Buffers.emplace_back(
@@ -804,9 +813,9 @@ bundleLinkedOutput(ArrayRef<OffloadingImage> Images, const ArgList &Args,
                    OffloadKind Kind) {
   llvm::TimeTraceScope TimeScope("Bundle linked output");
   switch (Kind) {
-  case OFK_OpenMP:
   case OFK_SYCL:
-    return bundleOpenMP(Images);
+  case OFK_OpenMP:
+    return bundleOpenMPAndSYCL(Images);
   case OFK_Cuda:
     return bundleCuda(Images, Args);
   case OFK_HIP:
@@ -1014,7 +1023,7 @@ Expected<SmallVector<StringRef>> linkAndWrapDeviceFiles(
     auto BundledImagesOrErr = bundleLinkedOutput(Input, Args, Kind);
     if (!BundledImagesOrErr)
       return BundledImagesOrErr.takeError();
-    auto OutputOrErr = wrapDeviceImages(*BundledImagesOrErr, Args, Kind);
+    auto OutputOrErr = wrapDeviceImages(*BundledImagesOrErr, Input, Args, Kind);
     if (!OutputOrErr)
       return OutputOrErr.takeError();
     WrappedOutput.push_back(*OutputOrErr);

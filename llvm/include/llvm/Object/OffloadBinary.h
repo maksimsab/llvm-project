@@ -47,6 +47,7 @@ enum ImageKind : uint16_t {
   IMG_Cubin,
   IMG_Fatbinary,
   IMG_PTX,
+  IMG_SPIRV,
   IMG_LAST,
 };
 
@@ -81,6 +82,8 @@ public:
 
   /// Serialize the contents of \p File to a binary buffer to be read later.
   static SmallString<0> write(const OffloadingImage &);
+
+  OffloadingImage getOffloadingImage() const;
 
   static uint64_t getAlignment() { return 8; }
 
