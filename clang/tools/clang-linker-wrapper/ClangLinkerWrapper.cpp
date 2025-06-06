@@ -684,8 +684,7 @@ Expected<StringRef> compileModule(Module &M, OffloadKind Kind) {
 /// registration code from the device images stored in \p Images.
 Expected<StringRef>
 wrapDeviceImages(ArrayRef<std::unique_ptr<MemoryBuffer>> Buffers,
-                 ArrayRef<OffloadingImage> Images, const ArgList &Args,
-                 OffloadKind Kind) {
+                 const ArgList &Args, OffloadKind Kind) {
   llvm::TimeTraceScope TimeScope("Wrap bundled images");
 
   SmallVector<ArrayRef<char>, 4> BuffersToWrap;
@@ -751,13 +750,43 @@ wrapDeviceImages(ArrayRef<std::unique_ptr<MemoryBuffer>> Buffers,
 }
 
 Expected<SmallVector<std::unique_ptr<MemoryBuffer>>>
-bundleOpenMPAndSYCL(ArrayRef<OffloadingImage> Images) {
+bundleOpenMP(ArrayRef<OffloadingImage> Images) {
   SmallVector<std::unique_ptr<MemoryBuffer>> Buffers;
   for (const OffloadingImage &Image : Images)
     Buffers.emplace_back(
         MemoryBuffer::getMemBufferCopy(OffloadBinary::write(Image)));
 
   return std::move(Buffers);
+}
+
+Expected<SmallVector<std::unique_ptr<MemoryBuffer>>>
+bundleSYCL(ArrayRef<OffloadingImage> Images) {
+  SmallVector<std::unique_ptr<MemoryBuffer>> Buffers;
+  if (DryRun) {
+    // In dry-run mode there is an empty input which is insufficient for
+    // the testing. Therefore, we insert a stub value.
+    OffloadBinary::OffloadingImage Image;
+    Image.TheOffloadKind = OffloadKind::OFK_SYCL;
+    Image.Image = MemoryBuffer::getMemBufferCopy("");
+    SmallString<0> SerializedImage = OffloadBinary::write(Image);
+    Buffers.emplace_back(MemoryBuffer::getMemBufferCopy(SerializedImage));
+    return Buffers;
+  }
+
+  for (const OffloadingImage &TheImage : Images) {
+    SmallVector<OffloadFile> OffloadBinaries;
+    if (Error E = extractOffloadBinaries(*TheImage.Image, OffloadBinaries))
+      return E;
+
+    for (const OffloadFile &File : OffloadBinaries) {
+      const OffloadBinary &Binary = *File.getBinary();
+      SmallString<0> SerializedImage =
+          OffloadBinary::write(Binary.getOffloadingImage());
+      Buffers.emplace_back(MemoryBuffer::getMemBufferCopy(SerializedImage));
+    }
+  }
+
+  return Buffers;
 }
 
 Expected<SmallVector<std::unique_ptr<MemoryBuffer>>>
@@ -813,9 +842,10 @@ bundleLinkedOutput(ArrayRef<OffloadingImage> Images, const ArgList &Args,
                    OffloadKind Kind) {
   llvm::TimeTraceScope TimeScope("Bundle linked output");
   switch (Kind) {
-  case OFK_SYCL:
   case OFK_OpenMP:
-    return bundleOpenMPAndSYCL(Images);
+    return bundleOpenMP(Images);
+  case OFK_SYCL:
+    return bundleSYCL(Images);
   case OFK_Cuda:
     return bundleCuda(Images, Args);
   case OFK_HIP:
@@ -1023,7 +1053,7 @@ Expected<SmallVector<StringRef>> linkAndWrapDeviceFiles(
     auto BundledImagesOrErr = bundleLinkedOutput(Input, Args, Kind);
     if (!BundledImagesOrErr)
       return BundledImagesOrErr.takeError();
-    auto OutputOrErr = wrapDeviceImages(*BundledImagesOrErr, Input, Args, Kind);
+    auto OutputOrErr = wrapDeviceImages(*BundledImagesOrErr, Args, Kind);
     if (!OutputOrErr)
       return OutputOrErr.takeError();
     WrappedOutput.push_back(*OutputOrErr);
