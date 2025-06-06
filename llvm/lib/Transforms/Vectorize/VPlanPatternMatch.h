@@ -222,7 +222,8 @@ struct Recipe_match {
       return false;
 
     assert(R->getNumOperands() == std::tuple_size<Ops_t>::value &&
-           "recipe with matched opcode the expected number of operands");
+           "recipe with matched opcode does not have the expected number of "
+           "operands");
 
     auto IdxSeq = std::make_index_sequence<std::tuple_size<Ops_t>::value>();
     if (all_of_tuple_elements(IdxSeq, [R](auto Op, unsigned Idx) {
@@ -315,6 +316,12 @@ inline TernaryVPInstruction_match<Op0_t, Op1_t, Op2_t, Opcode>
 m_VPInstruction(const Op0_t &Op0, const Op1_t &Op1, const Op2_t &Op2) {
   return TernaryVPInstruction_match<Op0_t, Op1_t, Op2_t, Opcode>(
       {Op0, Op1, Op2});
+}
+
+template <typename Op0_t>
+inline UnaryVPInstruction_match<Op0_t, Instruction::Freeze>
+m_Freeze(const Op0_t &Op0) {
+  return m_VPInstruction<Instruction::Freeze>(Op0);
 }
 
 template <typename Op0_t>
@@ -460,21 +467,14 @@ m_LogicalOr(const Op0_t &Op0, const Op1_t &Op1) {
   return m_Select(Op0, m_True(), Op1);
 }
 
-using VPCanonicalIVPHI_match =
-    Recipe_match<std::tuple<>, 0, false, VPCanonicalIVPHIRecipe>;
-
-inline VPCanonicalIVPHI_match m_CanonicalIV() {
-  return VPCanonicalIVPHI_match();
-}
-
-template <typename Op0_t, typename Op1_t>
+template <typename Op0_t, typename Op1_t, typename Op2_t>
 using VPScalarIVSteps_match =
-    Recipe_match<std::tuple<Op0_t, Op1_t>, 0, false, VPScalarIVStepsRecipe>;
+    TernaryRecipe_match<Op0_t, Op1_t, Op2_t, 0, false, VPScalarIVStepsRecipe>;
 
-template <typename Op0_t, typename Op1_t>
-inline VPScalarIVSteps_match<Op0_t, Op1_t> m_ScalarIVSteps(const Op0_t &Op0,
-                                                           const Op1_t &Op1) {
-  return VPScalarIVSteps_match<Op0_t, Op1_t>(Op0, Op1);
+template <typename Op0_t, typename Op1_t, typename Op2_t>
+inline VPScalarIVSteps_match<Op0_t, Op1_t, Op2_t>
+m_ScalarIVSteps(const Op0_t &Op0, const Op1_t &Op1, const Op2_t &Op2) {
+  return VPScalarIVSteps_match<Op0_t, Op1_t, Op2_t>({Op0, Op1, Op2});
 }
 
 template <typename Op0_t, typename Op1_t, typename Op2_t>
