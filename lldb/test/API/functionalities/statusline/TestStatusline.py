@@ -27,10 +27,12 @@ class TestStatusline(PExpectTest):
         self.expect("run", substrs=["stop reason"])
         self.resize()
 
-    def resize(self):
+    def resize(self, height=None, width=None):
+        height = self.TERMINAL_HEIGHT if not height else height
+        width = self.TERMINAL_WIDTH if not width else width
         # Change the terminal dimensions. When we launch the tests, we reset
         # all the settings, leaving the terminal dimensions unset.
-        self.child.setwinsize(self.TERMINAL_HEIGHT, self.TERMINAL_WIDTH)
+        self.child.setwinsize(height, width)
 
     def test(self):
         """Basic test for the statusline."""
@@ -44,7 +46,7 @@ class TestStatusline(PExpectTest):
         self.expect(
             "set set show-statusline true",
             [
-                "\x1b[0;{}r".format(self.TERMINAL_HEIGHT - 1),
+                "\x1b[1;{}r".format(self.TERMINAL_HEIGHT - 1),
                 "a.out | main.c:2:11 | breakpoint 1.1                        ",
             ],
         )
@@ -66,7 +68,7 @@ class TestStatusline(PExpectTest):
 
         # Hide the statusline and check or the control character.
         self.expect(
-            "set set show-statusline false", ["\x1b[0;{}r".format(self.TERMINAL_HEIGHT)]
+            "set set show-statusline false", ["\x1b[1;{}r".format(self.TERMINAL_HEIGHT)]
         )
 
     def test_no_color(self):
@@ -104,3 +106,14 @@ class TestStatusline(PExpectTest):
         self.resize()
 
         self.expect("set set show-statusline true", ["no target"])
+
+    @skipIfEditlineSupportMissing
+    def test_resize(self):
+        """Test that move the cursor when resizing."""
+        self.launch(timeout=self.TIMEOUT)
+        self.resize()
+        self.expect("set set show-statusline true", ["no target"])
+        self.resize(20, 60)
+        # Check for the escape code to resize the scroll window, followed by
+        # the prompt.
+        self.child.expect(re.escape("\x1b[1;19r\x1b8(lldb)"))
