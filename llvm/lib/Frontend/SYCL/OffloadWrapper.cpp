@@ -73,7 +73,8 @@ struct Wrapper {
                                       ConstantInt::get(SizeTTy, Second)};
   }
 
-  // TODO: Drop Version in favor of the Version in Binary Descriptor.
+  /// Note: Properties aren't supported and the support is going
+  /// to be added later.
   /// Creates a structure corresponding to:
   /// SYCL specific image descriptor type.
   /// \code
@@ -189,9 +190,7 @@ struct Wrapper {
     return DataPtr;
   }
 
-  /// Creates necessary data objects for the given image and returns a pair
-  /// of pointers that point to the beginning and end of the global variable
-  /// that contains the image data.
+  /// Creates necessary data objects for the given image.
   ///
   /// \returns Pair of pointers that point at the
   /// beginning and at end of the global variable that contains the image data.
@@ -199,8 +198,7 @@ struct Wrapper {
   addDeviceImageToModule(ArrayRef<char> Buf, const Twine &Name,
                          StringRef TargetTriple) {
     // Create global variable for the image data.
-    return addArrayToModule(Buf, Name,
-                            TargetTriple.empty() ? "" : TargetTriple);
+    return addArrayToModule(Buf, Name, ".llvm.offloading");
   }
 
   /// Creates a global variable of const char* type and creates an
@@ -315,42 +313,43 @@ struct Wrapper {
 
   Constant *wrapImage(const OffloadingImage &OI, const Twine &ImageID,
                       StringRef OffloadKindTag) {
-    // DeviceImageStructVersion change log:
-    // -- version 2: updated to PI 1.2 binary image format
-    // -- version 3: Manifests are removed.
+    // Note: Intel DPC++ compiler had 2 versions of this structure
+    // and clang++ has a third different structure. To avoid ABI incompatibility
+    // between generated device images the Version here starts from 3.
     constexpr uint16_t DeviceImageStructVersion = 3;
-    auto *Version =
+    Constant *Version =
         ConstantInt::get(Type::getInt16Ty(C), DeviceImageStructVersion);
-    auto *OffloadKindConstant = ConstantInt::get(
+    Constant *OffloadKindConstant = ConstantInt::get(
         Type::getInt8Ty(C), static_cast<uint8_t>(OI.TheOffloadKind));
-    auto *ImageKindConstant = ConstantInt::get(
+    Constant *ImageKindConstant = ConstantInt::get(
         Type::getInt8Ty(C), static_cast<uint8_t>(OI.TheImageKind));
     StringRef Triple = OI.StringData.lookup("triple");
-    auto *TripleConstant =
+    Constant *TripleConstant =
         addStringToModule(Triple, Twine(OffloadKindTag) + "target." + ImageID);
-    auto *CompileOptions =
+    Constant *CompileOptions =
         addStringToModule(Options.CompileOptions,
                           Twine(OffloadKindTag) + "opts.compile." + ImageID);
-    auto *LinkOptions = addStringToModule(
+    Constant *LinkOptions = addStringToModule(
         Options.LinkOptions, Twine(OffloadKindTag) + "opts.link." + ImageID);
 
-    auto *PropertiesConstant = addStringToModule(
-        OI.StringData.lookup("properties"), "__sycl_properties");
+    // Note: NULL for now.
+    std::pair<Constant *, Constant *> PropertiesConstants = {
+        Constant::getNullValue(PointerType::getUnqual(C)),
+        Constant::getNullValue(PointerType::getUnqual(C))};
 
-    const auto &RawImage = *OI.Image;
+    const MemoryBuffer &RawImage = *OI.Image;
     std::pair<Constant *, Constant *> Binary = addDeviceImageToModule(
         ArrayRef<char>(RawImage.getBufferStart(), RawImage.getBufferEnd()),
         Twine(OffloadKindTag) + ImageID + ".data", Triple);
 
-    // For SYCL image offload entries are defined here, by wrapper, so
-    // those are created per image
+    // For SYCL images offload entries are defined here per image.
     std::pair<Constant *, Constant *> ImageEntriesPtrs =
         addOffloadEntriesToModule(OI.StringData.lookup("symbols"));
     Constant *WrappedBinary = ConstantStruct::get(
         SyclDeviceImageTy, Version, OffloadKindConstant, ImageKindConstant,
         TripleConstant, CompileOptions, LinkOptions, Binary.first,
         Binary.second, ImageEntriesPtrs.first, ImageEntriesPtrs.second,
-        PropertiesConstant);
+        PropertiesConstants.first, PropertiesConstants.second);
 
     emitRegistrationFunctions(Binary.first, RawImage.getBufferSize(), ImageID,
                               OffloadKindTag);
@@ -410,23 +409,21 @@ struct Wrapper {
   ///  ...
   /// static const char ImageN[] = { ... };
   ///
-  /// static constexpr uint16_t Version = 3;
-  /// static constexpr uint16_t OffloadKind = 4; // SYCL
-  ///
   /// static const __sycl.tgt_device_image Images[] = {
   ///   {
   ///     Version,                      // Version
   ///     OffloadKind,                  // OffloadKind
   ///     Format,                       // format of the image - SPIRV, LLVMIR
   ///                                   // bc, etc
-  //      NULL,                         // Arch
+  //      TripleString,                 // Arch
   ///     CompileOptions0,              // CompileOptions
   ///     LinkOptions0,                 // LinkOptions
   ///     Image0,                       // ImageStart
   ///     Image0 + N,                   // ImageEnd
   ///     __start_offloading_entries0,  // EntriesBegin
   ///     __stop_offloading_entries0,   // EntriesEnd
-  ///     Properties,                   // Properties
+  ///     NULL,                         // PropertiesBegin
+  ///     NULL,                         // PropertiesEnd
   ///   },
   ///   ...
   /// };
@@ -435,8 +432,8 @@ struct Wrapper {
   ///   Version,                             //Version
   ///   sizeof(Images) / sizeof(Images[0]),  //NumDeviceImages
   ///   Images,                              //DeviceImages
-  ///   __start_offloading_entries,          //HostEntriesBegin
-  ///   __stop_offloading_entries            //HostEntriesEnd
+  ///   NULL,                                //HostEntriesBegin
+  ///   NULL                                 //HostEntriesEnd
   /// };
   /// \endcode
   ///
